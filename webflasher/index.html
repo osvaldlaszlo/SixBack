@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>BoseFix32 — Web Flasher</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="description" content="One-click ESP32 flasher for BoseFix32 — local SoundTouch cloud replacement.">
+<style>
+  :root {
+    --bg:#f7f6f3; --card:#fff; --ink:#222; --mute:#777;
+    --ok:#1f7a3a; --warn:#b86c00; --bad:#a32525; --accent:#7a3e00;
+    --line:#e1ddd2;
+  }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
+         max-width: 52em; margin: 0 auto; padding: 1.5em 1em;
+         color: var(--ink); background: var(--bg); line-height: 1.5; }
+  h1 { color: var(--accent); margin: .2em 0; font-weight: 600; font-size: 1.8em; }
+  h2 { color: var(--accent); margin-top: 1.8em; font-size: 1.2em; }
+  p  { margin: .6em 0; }
+  a  { color: var(--accent); }
+  code { background: #fee; padding: .1em .35em; border-radius: 3px; font-size: .9em; }
+  .hero { text-align: center; padding: 1em 0 1.4em; }
+  .hero img { max-width: 100%; height: auto; }
+  .panel { background: var(--card); border: 1px solid var(--line);
+           border-radius: 10px; padding: 1.2em 1.4em; margin: 1em 0; }
+  .panel.flash { text-align: center; }
+  esp-web-install-button { --esp-tools-button-color: var(--accent);
+                           --esp-tools-button-text-color: #fff; }
+  .targets { display: grid; grid-template-columns: repeat(auto-fit, minmax(12em, 1fr));
+             gap: .8em; margin-top: .8em; }
+  .target { background: #fbfaf6; border: 1px solid var(--line); border-radius: 6px;
+            padding: .6em .8em; font-size: .9em; }
+  .target .name { font-weight: 600; color: var(--accent); }
+  .target .meta { color: var(--mute); font-family: ui-monospace, Menlo, monospace; font-size: .8em; }
+  .warn { background: #fce8d2; border-left: 4px solid var(--warn);
+          padding: .6em 1em; border-radius: 4px; margin: 1em 0; }
+  .ok   { background: #e1f1e5; border-left: 4px solid var(--ok);
+          padding: .6em 1em; border-radius: 4px; margin: 1em 0; }
+  ol li, ul li { margin: .3em 0; }
+  footer { margin-top: 2em; padding-top: 1em; border-top: 1px solid var(--line);
+           color: var(--mute); font-size: .85em; text-align: center; }
+</style>
+</head>
+<body>
+
+<div class="hero">
+  <img src="images/bosefix32-title.svg" alt="BoseFix32" width="640">
+  <h1>BoseFix32 — Web Flasher</h1>
+  <p style="color:var(--mute)">Local SoundTouch cloud replacement on an ESP32 stick.<br>
+     Bose shut their cloud down — this brings the preset buttons back.</p>
+</div>
+
+<div class="panel flash">
+  <h2 style="margin-top:0">Install BoseFix32 on your ESP32</h2>
+  <p>Plug your ESP32 board into USB, click below, and pick the serial port that appears.<br>
+     The browser detects the chip and flashes the matching factory image.</p>
+  <p>
+    <esp-web-install-button manifest="manifest.json"></esp-web-install-button>
+  </p>
+  <p style="color:var(--mute); font-size:.85em">
+    Version <code id="ver">…</code> — same image you build locally with
+    <code>./scripts/build_release.sh</code>.
+  </p>
+</div>
+
+<div class="warn">
+  <strong>Browser requirement:</strong> Web&nbsp;Serial is only implemented in
+  Chromium-based desktop browsers — <strong>Chrome, Edge, Opera, Brave</strong>
+  on macOS / Windows / Linux. Safari, Firefox and all mobile browsers are
+  <em>not</em> supported.
+</div>
+
+<h2>Supported targets</h2>
+<div class="targets" id="targets">…</div>
+
+<h2>How it works</h2>
+<ol>
+  <li>Click <strong>CONNECT</strong> above and pick the serial port of your ESP32.</li>
+  <li>esp-web-tools reads the chip family from the bootloader and selects the
+      matching factory image from <a href="manifest.json"><code>manifest.json</code></a>.</li>
+  <li>The factory image — bootloader + partition table + firmware + Web UI —
+      is written to <code>0x0</code> in one shot. Old contents are erased.</li>
+  <li>After reboot, BoseFix32 starts in <strong>Improv-Wi-Fi</strong> mode and
+      waits for credentials. esp-web-tools offers the Improv flow right after
+      flashing, so you can hand over Wi-Fi SSID and password from the same page.</li>
+  <li>The device then advertises itself as <code>bosefix.local</code> on mDNS;
+      open <code>http://bosefix.local/</code> to manage your Bose speakers.</li>
+</ol>
+
+<div class="ok">
+  <strong>OTA updates later:</strong> once BoseFix32 runs on the device, future
+  updates can be uploaded via the Web&nbsp;UI's <em>System</em> panel without
+  USB — that's what the <code>*-firmware.bin</code> and <code>*-littlefs.bin</code>
+  files next to the factory images are for.
+</div>
+
+<h2>Manual install (if Web&nbsp;Serial doesn't work)</h2>
+<p>Each target ships three artefacts you can download and flash manually with
+   <a href="https://github.com/espressif/esptool"><code>esptool.py</code></a>:</p>
+<ul>
+  <li><code>bosefix32-&lt;tgt&gt;-factory.bin</code> — full image, flash to <code>0x0</code></li>
+  <li><code>bosefix32-&lt;tgt&gt;-firmware.bin</code> — app only, for OTA</li>
+  <li><code>bosefix32-&lt;tgt&gt;-littlefs.bin</code> — Web UI assets, for FS-OTA</li>
+</ul>
+<p>Example:</p>
+<pre><code>esptool.py --chip esp32s3 -p /dev/ttyACM0 write_flash 0x0 bosefix32-s3-factory.bin</code></pre>
+
+<footer>
+  Hosted at <a href="https://install.busware.de/bosefix/">install.busware.de/bosefix/</a>
+  · source code &amp; bug reports:
+  <a href="https://github.com/tostmann/BoseFix32">github.com/tostmann/BoseFix32</a>
+  · not affiliated with Bose Corporation.
+</footer>
+
+<script type="module"
+        src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
+<script>
+  // Pull the version + target list out of the manifest so the page never drifts.
+  fetch('manifest.json').then(r => r.json()).then(m => {
+    document.getElementById('ver').textContent = m.version || '?';
+    document.getElementById('targets').innerHTML = (m.builds || []).map(b => {
+      const part = (b.parts || [])[0] || {};
+      return `<div class="target">
+                <div class="name">${b.chipFamily}</div>
+                <div class="meta">${part.path || ''}</div>
+              </div>`;
+    }).join('');
+  }).catch(() => {
+    document.getElementById('targets').textContent =
+      'manifest.json not reachable — make sure the directory is served over HTTPS.';
+  });
+</script>
+</body>
+</html>

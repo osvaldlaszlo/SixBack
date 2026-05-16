@@ -1,0 +1,36 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// BoseFix32 — TuneIn-Live-Resolver mit Cache + User-Override
+//
+// Resolver-Pipeline:
+//   1. PresetStore: gibt es einen Override (streamUrl) fuer diese stationId?
+//      -> Bose-JSON-Wrapper, kein TuneIn-Call.
+//   2. NVS-Cache (Namespace bosefix-tune): TTL 7 Tage.
+//      -> Cache-Hit -> JSON sofort aus Cache.
+//   3. HTTP-GET zu http://opml.radiotime.com/Tune.ashx?id=<id>&render=json
+//      -> Stream-URL extrahieren, in NVS cachen, JSON bauen.
+//   4. Hardcoded-Fallback fuer die 6 Dirk-Stations (Notnagel wenn
+//      Internet weg oder TuneIn-API tot ist).
+#ifndef BOSEFIX32_TUNEIN_RESOLVER_H
+#define BOSEFIX32_TUNEIN_RESOLVER_H
+
+#include <Arduino.h>
+
+namespace bosefix {
+
+struct TuneInResolution {
+    String stationId;
+    String name;
+    String streamUrl;
+    String imageUrl;
+    String source;        // "preset_override" / "cache" / "opml" / "fallback"
+    bool   ok;
+};
+
+TuneInResolution resolveTuneInStruct(const String& stationId);
+
+} // namespace bosefix
+
+// Legacy/compat — Phase-0-API.
+String resolveTuneInStation(const String& stationId);
+
+#endif

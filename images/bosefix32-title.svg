@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 360" role="img" aria-label="BoseFix32 — local SoundTouch cloud replacement">
+  <title>BoseFix32</title>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#f7f6f3"/>
+      <stop offset="100%" stop-color="#ebe6da"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#7a3e00"/>
+      <stop offset="100%" stop-color="#b86c00"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1280" height="360" rx="24" fill="url(#bg)"/>
+
+  <!-- Speaker silhouette: rounded rect + concentric speaker rings -->
+  <g transform="translate(96 70)">
+    <rect x="0" y="0" width="220" height="220" rx="26" fill="#fff"
+          stroke="#d8cdb3" stroke-width="2"/>
+    <!-- tweeter -->
+    <circle cx="110" cy="62"  r="14" fill="#fbfaf6" stroke="#b89d6a" stroke-width="2"/>
+    <!-- woofer rings -->
+    <circle cx="110" cy="148" r="56" fill="#fbfaf6" stroke="#b89d6a" stroke-width="2"/>
+    <circle cx="110" cy="148" r="40" fill="#f3ead1" stroke="#b89d6a" stroke-width="1.5"/>
+    <circle cx="110" cy="148" r="22" fill="url(#accent)"/>
+    <circle cx="110" cy="148" r="6"  fill="#fbe7c4"/>
+    <!-- preset row 1-2-3 above the woofer -->
+    <g fill="#7a3e00">
+      <circle cx="44"  cy="32" r="5"/>
+      <circle cx="74"  cy="32" r="5"/>
+      <circle cx="104" cy="32" r="5"/>
+      <circle cx="134" cy="32" r="5"/>
+      <circle cx="164" cy="32" r="5"/>
+      <circle cx="194" cy="32" r="5"/>
+    </g>
+  </g>
+
+  <!-- WiFi arc, hinting at "we replace the cloud over WiFi" -->
+  <g transform="translate(360 110)" stroke="url(#accent)" fill="none" stroke-linecap="round">
+    <path d="M0 60 a60 60 0 0 1 84 0" stroke-width="6"/>
+    <path d="M14 46 a44 44 0 0 1 56 0" stroke-width="5"/>
+    <path d="M28 32 a28 28 0 0 1 28 0"  stroke-width="4"/>
+    <circle cx="42" cy="60" r="6" fill="url(#accent)" stroke="none"/>
+  </g>
+
+  <!-- Wordmark -->
+  <g transform="translate(490 170)" font-family="-apple-system, 'Segoe UI', system-ui, sans-serif">
+    <text x="0" y="0" font-size="120" font-weight="700" fill="url(#accent)">BoseFix32</text>
+    <text x="6" y="50" font-size="26" font-weight="500" fill="#7a5400" letter-spacing="2">
+      local SoundTouch cloud replacement
+    </text>
+    <text x="6" y="86" font-size="20" font-weight="400" fill="#8a7f6b"
+          font-family="ui-monospace, Menlo, monospace">
+      ESP32-S3 · ESP32-C3 · ESP32-C6  ·  github.com/tostmann/BoseFix32
+    </text>
+  </g>
+</svg>

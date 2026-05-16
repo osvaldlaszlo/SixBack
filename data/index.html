@@ -1,0 +1,656 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>BoseFix32 — Control</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  :root {
+    --bg:#f7f6f3; --card:#fff; --ink:#222; --mute:#777;
+    --ok:#1f7a3a; --warn:#b86c00; --bad:#a32525; --accent:#7a3e00;
+    --line:#e1ddd2;
+  }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
+         max-width: 56em; margin: 1.5em auto; padding: 0 1em;
+         color: var(--ink); background: var(--bg); }
+  h1 { color: var(--accent); margin: 0 0 .2em; font-weight: 600; }
+  h2 { color: var(--accent); margin-top: 1.5em; font-size: 1.15em; }
+  .subline { color: var(--mute); margin-top: 0; font-size: .9em; }
+  .subline a { color: var(--accent); }
+  .topbar { display: flex; align-items: baseline; gap: 1em; flex-wrap: wrap; }
+  .topbar .meta { color: var(--mute); font-size: .85em; font-family: ui-monospace, Menlo, monospace; }
+
+  button { font: inherit; padding: .35em .75em; border-radius: 5px;
+           border: 1px solid var(--line); background: #fff;
+           cursor: pointer; transition: background .1s; color: inherit; }
+  button:hover { background: #f0ece4; }
+  button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  button.primary:hover { background: #5a2d00; }
+  button.danger  { color: var(--bad); border-color: #d8aeae; }
+  button.danger:hover { background: #fbe5e5; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+
+  .toolbar { display: flex; gap: .5em; flex-wrap: wrap; margin: .5em 0 1em; }
+  input[type=text], input[type=url], select {
+    font: inherit; padding: .3em .5em;
+    border: 1px solid var(--line); border-radius: 4px; background: #fff;
+  }
+
+  .speaker {
+    background: var(--card); border: 1px solid var(--line);
+    border-radius: 8px; padding: 1em; margin-bottom: .8em;
+  }
+  .speaker-head { display: flex; justify-content: space-between; align-items: start;
+                  gap: 1em; flex-wrap: wrap; }
+  .speaker-title { font-weight: 600; font-size: 1.05em; }
+  .speaker-info { color: var(--mute); font-size: .85em; margin-top: .2em;
+                  font-family: ui-monospace, Menlo, monospace; }
+  .pill { display: inline-block; padding: .15em .55em; border-radius: 99px;
+          font-size: .75em; font-weight: 600; text-transform: uppercase;
+          letter-spacing: .03em; }
+  .pill.migrated_us    { background: #e1f1e5; color: var(--ok); }
+  .pill.original       { background: #fce8d2; color: var(--warn); }
+  .pill.foreign        { background: #dde7f3; color: #2952a0; }
+  .pill.offline        { background: #f5d5d5; color: var(--bad); }
+  .pill.unknown        { background: #e6e3da; color: var(--mute); }
+  .pill.stale          { background: #f9e8b6; color: #7a5400; }
+
+  .actions { display: flex; gap: .35em; flex-wrap: wrap; margin-top: .5em; }
+  /* Preset layout matches the speaker keypad: 2 rows × 3 columns (1-2-3 / 4-5-6) */
+  .presets { margin-top: .9em; display: grid;
+             grid-template-columns: repeat(3, 1fr);
+             gap: .5em; }
+  @media (max-width: 480px) {
+    /* On very narrow screens 2×3 gets cramped — fall back to 2 columns */
+    .presets { grid-template-columns: repeat(2, 1fr); }
+  }
+  .preset { border: 1px solid var(--line); border-radius: 6px; padding: .5em;
+            background: #fbfaf6; display: flex; flex-direction: column; gap: .3em; }
+  .preset .slot { font-size: .7em; color: var(--mute); font-weight: 600; }
+  .preset .pname { font-weight: 600; }
+  .preset .pmeta { font-size: .75em; color: var(--mute); font-family: ui-monospace, Menlo, monospace;
+                   word-break: break-all; }
+  .preset .pactions { display: flex; gap: .25em; margin-top: .25em; }
+  .preset.empty { background: #f0ede4; }
+  .preset.empty .pname { color: var(--mute); font-style: italic; font-weight: 400; }
+
+  .modal { position: fixed; inset: 0; background: rgba(0,0,0,.4);
+           display: none; align-items: center; justify-content: center; padding: 1em; z-index:99; }
+  .modal.open { display: flex; }
+  .modal .box { background: #fff; padding: 1.2em 1.4em; border-radius: 8px;
+                max-width: 30em; width: 100%; max-height: 90vh; overflow: auto; }
+  .modal h3 { margin-top: 0; color: var(--accent); }
+  .modal label { display: block; margin-top: .8em; font-weight: 600; font-size: .9em; }
+  .modal input, .modal select { width: 100%; margin-top: .2em; }
+  .modal .row { display: flex; gap: .5em; margin-top: 1em; justify-content: flex-end; }
+
+  .toast { position: fixed; bottom: 1em; right: 1em;
+           background: var(--accent); color: #fff; padding: .7em 1em;
+           border-radius: 6px; opacity: 0; transition: opacity .2s; z-index: 200; max-width: 28em; }
+  .toast.show { opacity: 1; }
+  .toast.error { background: var(--bad); }
+  .toast.success { background: var(--ok); }
+  pre { background: #f0ede4; padding: .6em; border-radius: 4px; font-size: .8em;
+        overflow: auto; max-height: 14em; }
+  details { margin-top: .5em; }
+  details summary { cursor: pointer; color: var(--mute); font-size: .85em; }
+
+  /* System panel */
+  .syspanel { background: var(--card); border: 1px solid var(--line);
+              border-radius: 8px; padding: 1em; margin-top: 1em; }
+  .syspanel h2 { margin-top: 0; }
+  .sys-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(11em, 1fr));
+              gap: .6em; margin: .6em 0 1em; }
+  .sys-cell { background: #fbfaf6; border: 1px solid var(--line); border-radius: 6px;
+              padding: .5em .7em; }
+  .sys-cell .lbl { font-size: .72em; color: var(--mute); text-transform: uppercase;
+                   letter-spacing: .05em; }
+  .sys-cell .val { font-weight: 600; font-family: ui-monospace, Menlo, monospace; }
+  .sys-cell.bad  .val { color: var(--bad); }
+  .sys-cell.warn .val { color: var(--warn); }
+  .sys-cell.ok   .val { color: var(--ok); }
+  .ota-row { display: flex; gap: .8em; flex-wrap: wrap; align-items: center;
+             margin-top: .5em; }
+  .ota-row label { display: inline-flex; align-items: center; gap: .4em; }
+  .ota-progress { display: none; width: 100%; height: .6em;
+                  background: var(--line); border-radius: 99px; overflow: hidden;
+                  margin-top: .4em; }
+  .ota-progress.active { display: block; }
+  .ota-progress > div { height: 100%; background: var(--accent); width: 0%;
+                        transition: width .2s; }
+  .repo { margin-top: 1em; font-size: .85em; color: var(--mute); }
+  .repo a { color: var(--accent); }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <h1>BoseFix32</h1>
+  <div class="meta" id="status-meta">…</div>
+</div>
+<p class="subline">Local SoundTouch cloud replacement. Discover speakers on the LAN, migrate them, manage presets — all from this page. Source:
+  <a href="https://github.com/tostmann/BoseFix32" target="_blank" rel="noopener">github.com/tostmann/BoseFix32</a>.</p>
+
+<div class="toolbar">
+  <button class="primary" onclick="discover()">↻ Discover speakers (LAN scan)</button>
+  <button onclick="refreshStatuses()">🔄 Refresh status</button>
+  <button onclick="openAddModal()">+ Add speaker manually</button>
+  <button onclick="openGroupSyncModal()">⇄ Sync presets to group</button>
+  <button class="danger" onclick="rebootEsp()">⟲ Reboot ESP</button>
+  <button class="danger" onclick="factoryResetWifi()">⚠ WiFi factory reset</button>
+</div>
+
+<div id="speakers-host">Loading…</div>
+
+<div class="syspanel">
+  <h2>System</h2>
+  <div class="sys-grid" id="sys-grid">…</div>
+  <div class="ota-row">
+    <label>App firmware (firmware.bin):
+      <input type="file" id="ota-app-file" accept=".bin">
+    </label>
+    <button class="primary" onclick="uploadOta('app')">Flash app</button>
+  </div>
+  <div class="ota-progress" id="ota-app-prog"><div></div></div>
+  <div class="ota-row">
+    <label>Web UI (littlefs.bin):
+      <input type="file" id="ota-fs-file" accept=".bin">
+    </label>
+    <button onclick="uploadOta('fs')">Flash web UI</button>
+  </div>
+  <div class="ota-progress" id="ota-fs-prog"><div></div></div>
+  <div class="repo">
+    Repository:
+    <a href="https://github.com/tostmann/BoseFix32" target="_blank" rel="noopener">github.com/tostmann/BoseFix32</a>
+    · clone:
+    <code>git clone git@github.com:tostmann/BoseFix32.git</code>
+  </div>
+  <details>
+    <summary>Show raw API</summary>
+    <pre id="raw-status">…</pre>
+  </details>
+</div>
+
+<!-- Modals -->
+<div class="modal" id="modal-add">
+  <div class="box">
+    <h3>Add speaker manually</h3>
+    <label>IP address</label>
+    <input type="text" id="add-ip" placeholder="10.10.11.196">
+    <div class="row">
+      <button onclick="closeModal('modal-add')">Cancel</button>
+      <button class="primary" onclick="submitAdd()">Add</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal" id="modal-preset">
+  <div class="box">
+    <h3 id="preset-title">Edit preset</h3>
+    <label>Source</label>
+    <select id="p-source">
+      <option value="TUNEIN">TuneIn (station ID)</option>
+      <option value="LOCAL_INTERNET_RADIO">Direct stream (URL)</option>
+    </select>
+    <label>Name (shown on speaker)</label>
+    <input type="text" id="p-name" placeholder="e.g. SWR3">
+    <label id="lbl-station">TuneIn station ID</label>
+    <input type="text" id="p-station" placeholder="s24896">
+    <label id="lbl-url">Stream URL (leave blank to use TuneIn resolver)</label>
+    <input type="url" id="p-url" placeholder="http://liveradio.swr.de/tn2d2ac/swr3">
+    <label>Cover URL (optional)</label>
+    <input type="url" id="p-img" placeholder="https://cdn-profiles.tunein.com/s24896/images/logoq.png">
+    <div class="row">
+      <button onclick="closeModal('modal-preset')">Cancel</button>
+      <button class="danger" onclick="deletePreset()">Delete</button>
+      <button onclick="savePreset(false)">Save in BoseFix32 only</button>
+      <button class="primary" onclick="savePreset(true)">Save &amp; write to speaker</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal" id="modal-group">
+  <div class="box">
+    <h3>Copy presets from one speaker to others</h3>
+    <label>Source (speaker to copy from)</label>
+    <select id="g-source"></select>
+    <label>Targets (Ctrl/Cmd-click for multi-select)</label>
+    <select id="g-targets" multiple size="6"></select>
+    <div class="row">
+      <button onclick="closeModal('modal-group')">Cancel</button>
+      <button class="primary" onclick="submitGroupSync()">Transfer</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+let STATE = { speakers: [], editing: null };
+
+// ---- Toast ----
+function toast(msg, kind='success') {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = 'toast show ' + kind;
+  clearTimeout(window._toastT);
+  window._toastT = setTimeout(() => { t.className = 'toast'; }, 4000);
+}
+
+// ---- HTTP helpers ----
+async function api(path, opts={}) {
+  const r = await fetch(path, opts);
+  let body = null;
+  try { body = await r.json(); } catch(_) { body = null; }
+  if (!r.ok) {
+    const m = body && body.error ? body.error : ('HTTP '+r.status);
+    throw new Error(m);
+  }
+  return body;
+}
+
+// ---- Status ----
+function fmtUptime(s) {
+  const d = Math.floor(s / 86400); s %= 86400;
+  const h = Math.floor(s / 3600);  s %= 3600;
+  const m = Math.floor(s / 60);    s %= 60;
+  if (d) return `${d}d ${h}h ${m}m`;
+  if (h) return `${h}h ${m}m`;
+  if (m) return `${m}m ${s}s`;
+  return `${s}s`;
+}
+function sysCell(lbl, val, kind='') {
+  return `<div class="sys-cell ${kind}"><div class="lbl">${lbl}</div><div class="val">${esc(val)}</div></div>`;
+}
+async function loadStatus() {
+  try {
+    const s = await api('/api/status');
+    STATE.myBase = (s.cloud_replacement && s.cloud_replacement.base_url) || '';
+    document.getElementById('status-meta').textContent =
+      `v${s.version} · ${s.wifi.ip} · RSSI ${s.wifi.rssi} dBm · ${s.chip.model} · Heap ${Math.round(s.heap.free/1024)}KB · ${s.speakers_count} speaker(s) known`;
+    document.getElementById('raw-status').textContent = JSON.stringify(s, null, 2);
+
+    const h = s.health || {};
+    const heapKind  = s.heap.free < 30*1024 ? 'bad'
+                    : s.heap.free < 60*1024 ? 'warn' : 'ok';
+    const rssiKind  = s.wifi.rssi <= -80 ? 'bad'
+                    : s.wifi.rssi <= -70 ? 'warn' : 'ok';
+    const lastReset = h.last_reset || '?';
+    const lastKind  = ['PANIC','TASK_WDT','INT_WDT','WDT','BROWNOUT'].includes(lastReset) ? 'bad'
+                    : (lastReset === 'POWERON' ? 'ok' : '');
+    const crashKind = (h.crash_count|0) > 0 ? 'warn' : 'ok';
+    const wifiDown  = h.wifi_down_for_s|0;
+    const wifiKind  = wifiDown > 0 ? 'warn' : 'ok';
+    const heapLow   = h.heap_low_for_s|0;
+    document.getElementById('sys-grid').innerHTML = [
+      sysCell('Version',     `${s.version}  (${s.build})`),
+      sysCell('Uptime',      fmtUptime(s.uptime_s)),
+      sysCell('Free Heap',   `${Math.round(s.heap.free/1024)} KB (min ${Math.round(s.heap.min_free/1024)} KB)`, heapKind),
+      sysCell('PSRAM Free',  `${Math.round(s.psram.free/1024)} KB / ${Math.round(s.psram.total/1024)} KB`),
+      sysCell('WiFi RSSI',   `${s.wifi.rssi} dBm`, rssiKind),
+      sysCell('Last Reset',  lastReset, lastKind),
+      sysCell('Boot #',      h.boot_count|0),
+      sysCell('Crashes',     h.crash_count|0,    crashKind),
+      sysCell('WiFi Reboots',h.wifi_reboots|0),
+      sysCell('Heap Reboots',h.heap_reboots|0),
+      sysCell('WiFi down',   wifiDown ? fmtUptime(wifiDown) : '—', wifiKind),
+      sysCell('Heap low',    heapLow  ? fmtUptime(heapLow)  : '—', heapLow ? 'warn' : 'ok'),
+      sysCell('Task WDT',    h.wdt_subscribed ? 'active' : 'off', h.wdt_subscribed ? 'ok' : 'warn'),
+      sysCell('Last Ping',   h.last_ping_age_s >= 0 ? fmtUptime(h.last_ping_age_s)+' ago' : 'never'),
+      sysCell('Improv',
+              s.wifi.improv_active
+                ? `open · ${s.wifi.improv_window_s|0}s left`
+                : 'closed',
+              s.wifi.improv_active ? 'ok' : ''),
+      sysCell('WPS',
+              s.wifi.wps_active
+                ? `armed · ${s.wifi.wps_window_s|0}s left — press WPS on router`
+                : 'closed',
+              s.wifi.wps_active ? 'ok' : ''),
+      sysCell('Captive AP',
+              s.wifi.captive_active
+                ? `open · ${s.wifi.captive_window_s|0}s left — connect phone to BoseFix32-…`
+                : 'closed',
+              s.wifi.captive_active ? 'ok' : ''),
+    ].join('');
+  } catch (e) { toast('Status: '+e.message, 'error'); }
+}
+
+// ---- OTA ----
+function uploadOta(kind) {
+  const fileEl = document.getElementById('ota-'+kind+'-file');
+  const file = fileEl.files[0];
+  if (!file) { toast('Please pick a .bin file first', 'error'); return; }
+  const label = kind === 'app' ? 'App firmware' : 'Web UI';
+  if (!confirm(`Flash ${label} (${Math.round(file.size/1024)} KB)? ESP reboots after upload.`)) return;
+  const prog = document.getElementById('ota-'+kind+'-prog');
+  const bar  = prog.querySelector('div');
+  prog.classList.add('active'); bar.style.width = '0%';
+  const fd = new FormData();
+  fd.append('firmware', file, file.name);
+  const xhr = new XMLHttpRequest();
+  xhr.open('POST', '/api/ota'+(kind === 'fs' ? '/fs' : ''));
+  xhr.upload.onprogress = e => {
+    if (e.lengthComputable) bar.style.width = Math.round(e.loaded*100/e.total)+'%';
+  };
+  xhr.onload = () => {
+    prog.classList.remove('active');
+    if (xhr.status >= 200 && xhr.status < 300) {
+      toast(`${label}: flash succeeded, ESP rebooting…`, 'success');
+      setTimeout(loadStatus, 8000);
+    } else {
+      toast(`${label} failed: HTTP ${xhr.status} — ${xhr.responseText}`, 'error');
+    }
+  };
+  xhr.onerror = () => {
+    prog.classList.remove('active');
+    toast(`${label}: upload error`, 'error');
+  };
+  xhr.send(fd);
+}
+
+// ---- Speakers ----
+async function loadSpeakers() {
+  try {
+    const r = await api('/api/speakers');
+    STATE.speakers = r.speakers || [];
+    renderSpeakers();
+  } catch (e) { toast('Speaker list: '+e.message, 'error'); }
+}
+
+// Status classification combines the Telnet probe (status, cloud_url) with the
+// ownedByUs flag. Backend status is only 'migrated' (anywhere) / 'not_migrated'
+// (= original Bose) / 'offline' / 'unknown'. The UI decides:
+//   owned_by_us == true  → it's ours
+//     cloud_url == myBase → migrated (fresh)
+//     cloud_url != myBase → migrated (URL stale — failsafe repairs on next boot)
+//   owned_by_us == false
+//     status == not_migrated → original Bose cloud
+//     status == migrated     → migrated to foreign server
+//     status == offline      → offline
+//     status == unknown      → unknown
+function classify(s, myBase) {
+  if (s.status === 'offline') return ['offline', 'offline'];
+  if (s.owned_by_us) {
+    if (s.cloud_url && s.cloud_url === myBase)
+      return ['migrated_us', 'migrated (ours)'];
+    return ['stale', 'ours, but URL stale — will be repaired on reboot'];
+  }
+  if (s.status === 'not_migrated') return ['original', 'original Bose cloud (deprecated)'];
+  if (s.status === 'migrated')     return ['foreign',  'migrated to foreign server'];
+  if (s.status === 'unknown')      return ['unknown',  'unknown'];
+  return ['unknown', s.status || '?'];
+}
+
+function pillForStatus(s, myBase) {
+  const [cls, label] = classify(s, myBase);
+  return `<span class="pill ${cls}">${label}</span>`;
+}
+
+function renderSpeakers() {
+  const host = document.getElementById('speakers-host');
+  if (STATE.speakers.length === 0) {
+    host.innerHTML = `<div class="speaker"><p style="color:var(--mute)">No speakers known yet. Click "Discover speakers" or "Add manually".</p></div>`;
+    return;
+  }
+  const myBase = STATE.myBase || '';
+  host.innerHTML = STATE.speakers.map(s => speakerCard(s, myBase)).join('');
+  STATE.speakers.forEach(s => loadPresetsFor(s.device_id));
+}
+
+function speakerCard(s, myBase) {
+  const cloudLine = s.cloud_url ? `<div class="speaker-info">cloud URL: <code>${esc(s.cloud_url)}</code></div>` : '';
+  // Button logic: based on owned_by_us (persistent) rather than transient status.
+  const migrateButton = s.owned_by_us
+    ? '' // already ours — failsafe re-migrates on IP change automatically
+    : `<button class="primary" onclick="actSpeaker('${s.device_id}','migrate')">→ Migrate</button>`;
+  const revertButton = (s.owned_by_us || s.status === 'migrated')
+    ? `<button class="danger" onclick="actSpeaker('${s.device_id}','revert')">↩ Revert to original Bose</button>`
+    : '';
+  return `
+    <div class="speaker" id="sp-${s.device_id}">
+      <div class="speaker-head">
+        <div>
+          <div class="speaker-title">${esc(s.name || s.device_id)}  ${pillForStatus(s, myBase)}</div>
+          <div class="speaker-info">${esc(s.model)} · ${esc(s.ip)} · ${esc(s.device_id)} · FW ${esc((s.firmware||'').substring(0,15))}${s.group_id ? ' · group: '+esc(s.group_id) : ''}</div>
+          ${cloudLine}
+        </div>
+        <div class="actions">
+          ${migrateButton}
+          ${revertButton}
+          <button onclick="actSpeaker('${s.device_id}','reboot')">⟲ Reboot</button>
+          <button onclick="actSpeaker('${s.device_id}','refresh')">🔄 Status</button>
+          <button class="danger" onclick="removeSpeaker('${s.device_id}')">✕</button>
+        </div>
+      </div>
+      <div class="presets" id="presets-${s.device_id}">
+        <div style="grid-column:1/-1;color:var(--mute);font-size:.85em">Loading presets…</div>
+      </div>
+    </div>`;
+}
+
+async function loadPresetsFor(devId) {
+  try {
+    let r = await api('/api/speaker/'+encodeURIComponent(devId)+'/presets');
+    let presets = r.presets || [];
+    // Auto-import: if our ESP store has nothing yet but the speaker already has
+    // presets, pull them across ONCE. (Works for non-migrated speakers too,
+    // because the BMX API stays open regardless of cloud-URL config.)
+    const allEmpty = presets.every(p => !p.source || p.source === 'EMPTY');
+    if (allEmpty) {
+      try {
+        const ir = await api('/api/speaker/'+encodeURIComponent(devId)+'/presets/import-from-device',
+                              {method:'POST'});
+        if (ir.count > 0) {
+          r = await api('/api/speaker/'+encodeURIComponent(devId)+'/presets');
+          presets = r.presets || [];
+        }
+      } catch(_) { /* speaker maybe unreachable - silently show empty */ }
+    }
+    const host = document.getElementById('presets-'+devId);
+    if (!host) return;
+    const sorted = presets.slice().sort((a,b) => (a.slot||0) - (b.slot||0));
+    host.innerHTML = sorted.map((p, i) => presetCard(devId, p, i)).join('');
+  } catch(e) { /* ignore */ }
+}
+
+function presetCard(devId, p, idx) {
+  const slot = idx + 1;
+  const empty = (p.source === 'EMPTY' || !p.source);
+  const cls = empty ? 'preset empty' : 'preset';
+  const meta = empty ? '' :
+    (p.source === 'TUNEIN' ? 'TuneIn '+p.stationId : 'URL: '+p.streamUrl);
+  return `
+    <div class="${cls}" onclick="editPreset('${devId}', ${slot}, ${JSON.stringify(p).replace(/"/g,'&quot;')})">
+      <div class="slot">Preset ${slot}</div>
+      <div class="pname">${empty ? 'empty' : esc(p.name)}</div>
+      <div class="pmeta">${esc(meta)}</div>
+    </div>`;
+}
+
+// ---- Speaker actions ----
+async function actSpeaker(devId, action) {
+  const verb = ({migrate:'Migrate',revert:'Revert',reboot:'Reboot',refresh:'Status check'})[action];
+  if ((action==='migrate' || action==='revert' || action==='reboot') &&
+      !confirm(`Really ${verb}? This writes to the speaker via Telnet:17000.`)) return;
+  toast(verb+' running…');
+  try {
+    let r;
+    if (action === 'refresh') {
+      r = await api('/api/speakers/refresh-status', {method:'POST'});
+      STATE.speakers = r.speakers || STATE.speakers;
+      renderSpeakers();
+    } else {
+      r = await api('/api/speaker/'+encodeURIComponent(devId)+'/'+action, {method:'POST'});
+      toast(r.message || (verb+' done'), r.ok!==false ? 'success':'error');
+      await loadSpeakers();
+    }
+  } catch (e) { toast(verb+': '+e.message, 'error'); }
+}
+
+async function removeSpeaker(devId) {
+  if (!confirm('Remove speaker from ESP inventory? (The speaker itself is untouched.)')) return;
+  try { await api('/api/speakers/'+encodeURIComponent(devId), {method:'DELETE'}); await loadSpeakers(); toast('Removed'); }
+  catch(e) { toast(e.message, 'error'); }
+}
+
+async function discover() {
+  toast('Discovery running (known IPs + SSDP)…');
+  try {
+    const r = await api('/api/speakers/discover', {method:'POST'});
+    STATE.speakers = r.speakers || [];
+    renderSpeakers();
+    // discover() returns after the fast sync phase (known IPs + SSDP).
+    // The /24 active scan continues in the background — poll until it's
+    // done so the user sees newly-found speakers appear progressively.
+    if (r.scan_in_progress) {
+      toast(`${STATE.speakers.length} found so far — scanning LAN…`);
+      pollUntilScanDone();
+    } else {
+      toast(`${STATE.speakers.length} speaker(s) known`, 'success');
+    }
+  } catch(e) { toast('Discover: '+e.message, 'error'); }
+}
+
+async function pollUntilScanDone() {
+  // Polls /api/speakers every 3 s while the background active-scan runs,
+  // updates the UI as new speakers appear, stops when scan_in_progress
+  // flips back to false.  Total ceiling 60 s — even a worst-case /24
+  // scan with 150 ms probe finishes inside that.
+  for (let i = 0; i < 20; ++i) {
+    await new Promise(res => setTimeout(res, 3000));
+    try {
+      const r = await api('/api/speakers');
+      STATE.speakers = r.speakers || STATE.speakers;
+      renderSpeakers();
+      if (!r.scan_in_progress) {
+        toast(`Scan done — ${STATE.speakers.length} speaker(s) known`, 'success');
+        return;
+      }
+    } catch (_) { /* keep polling */ }
+  }
+  toast('Scan still running — UI will refresh on next /api/status tick', 'error');
+}
+
+async function refreshStatuses() {
+  await actSpeaker('all', 'refresh');
+}
+
+// ---- Add modal ----
+function openAddModal() { openModal('modal-add'); document.getElementById('add-ip').value=''; }
+async function submitAdd() {
+  const ip = document.getElementById('add-ip').value.trim();
+  if (!ip) return;
+  try {
+    await api('/api/speakers/add', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ip})});
+    closeModal('modal-add'); await loadSpeakers(); toast('Added');
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+// ---- Preset modal ----
+function editPreset(devId, slot, current) {
+  STATE.editing = {devId, slot};
+  document.getElementById('preset-title').textContent =
+    'Preset '+slot+' on speaker '+devId;
+  document.getElementById('p-source').value  = current.source && current.source !== 'EMPTY' ? current.source : 'TUNEIN';
+  document.getElementById('p-name').value    = current.name      || '';
+  document.getElementById('p-station').value = current.stationId || '';
+  document.getElementById('p-url').value     = current.streamUrl || '';
+  document.getElementById('p-img').value     = current.imageUrl  || '';
+  openModal('modal-preset');
+}
+
+async function savePreset(pushToDevice) {
+  const body = {
+    source:    document.getElementById('p-source').value,
+    name:      document.getElementById('p-name').value.trim(),
+    stationId: document.getElementById('p-station').value.trim(),
+    streamUrl: document.getElementById('p-url').value.trim(),
+    imageUrl:  document.getElementById('p-img').value.trim(),
+  };
+  const devId = STATE.editing.devId;
+  const slot  = STATE.editing.slot;
+  try {
+    await api(`/api/speaker/${devId}/preset/${slot}`, {
+      method:'PUT', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(body)});
+    if (pushToDevice) {
+      toast('Saved in ESP — now writing to speaker (~10s, brief audio)…');
+      try {
+        await api(`/api/speaker/${devId}/preset/${slot}/push-to-device`, {method:'POST'});
+        toast('Preset also saved on speaker', 'success');
+      } catch(e) {
+        toast('Saved in ESP but writing to speaker failed: '+e.message, 'error');
+      }
+    } else {
+      toast('Saved in ESP (speaker untouched)', 'success');
+    }
+    closeModal('modal-preset');
+    loadPresetsFor(devId);
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+async function deletePreset() {
+  if (!confirm('Really delete preset '+STATE.editing.slot+'?')) return;
+  try {
+    await api(`/api/speaker/${STATE.editing.devId}/preset/${STATE.editing.slot}`, {method:'DELETE'});
+    closeModal('modal-preset');
+    loadPresetsFor(STATE.editing.devId);
+    toast('Deleted');
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+// ---- Group sync ----
+function openGroupSyncModal() {
+  const src = document.getElementById('g-source');
+  const tgts = document.getElementById('g-targets');
+  src.innerHTML = STATE.speakers.map(s =>
+    `<option value="${s.device_id}">${esc(s.name)} (${s.ip})</option>`).join('');
+  tgts.innerHTML = STATE.speakers.map(s =>
+    `<option value="${s.device_id}">${esc(s.name)} (${s.ip})</option>`).join('');
+  openModal('modal-group');
+}
+async function submitGroupSync() {
+  const source_device_id = document.getElementById('g-source').value;
+  const target_device_ids = Array.from(document.getElementById('g-targets').selectedOptions)
+    .map(o => o.value).filter(v => v !== source_device_id);
+  if (target_device_ids.length === 0) { toast('No targets selected', 'error'); return; }
+  try {
+    const r = await api('/api/group/sync', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({source_device_id, target_device_ids})});
+    closeModal('modal-group');
+    await loadSpeakers();
+    toast(`Presets transferred to ${r.synced_to} speaker(s)`, 'success');
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+// ---- System ----
+async function rebootEsp() {
+  if (!confirm('Really reboot ESP?')) return;
+  try { await api('/api/reboot', {method:'POST'}); toast('Reboot in 500ms…'); }
+  catch(e) { toast(e.message, 'error'); }
+}
+async function factoryResetWifi() {
+  if (!confirm('Really erase WiFi credentials? ESP will reboot into Improv mode.')) return;
+  try { await api('/api/factory_reset_wifi', {method:'POST'}); toast('Reset, reboot in 500ms…'); }
+  catch(e) { toast(e.message, 'error'); }
+}
+
+// ---- Modal helpers ----
+function openModal(id) { document.getElementById(id).classList.add('open'); }
+function closeModal(id) { document.getElementById(id).classList.remove('open'); }
+
+// ---- Utility ----
+function esc(s) { return String(s||'').replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+// ---- Boot ----
+loadStatus();
+loadSpeakers();
+setInterval(loadStatus, 10000);
+</script>
+</body>
+</html>

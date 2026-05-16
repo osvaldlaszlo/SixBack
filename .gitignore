@@ -1,0 +1,16 @@
+.pio/
+.pioenvs/
+.piolibdeps/
+.vscode/
+.cache/
+__pycache__/
+*.pyc
+build/
+.DS_Store
+*.bin
+*.elf
+*.map
+# WiFi-credentials nicht ins Repo
+src/secrets.h
+# interne Claude-Code-Notes — gehoeren nicht ins Public-Repo
+CLAUDE.md
