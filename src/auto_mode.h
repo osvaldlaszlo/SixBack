@@ -23,16 +23,21 @@
 namespace bosefix {
 
 struct AutoModeConfig {
-    bool      enabled     = true;    // Image-Default: an, damit „flash → provision → migrate" zero-touch laeuft
-    bool      dryRun      = false;
-    uint32_t  bootDelayMs = 10000;
-    uint32_t  maxPerBoot  = 4;       // typischer Haushalt 1-4 SoundTouch — alle in einem Boot durch
+    bool      enabled       = true;   // Image-Default an: flash → provision → migrate zero-touch
+    bool      dryRun        = false;
+    uint32_t  bootDelayMs   = 10000;
+    uint32_t  maxPerBoot    = 4;      // typischer Haushalt 1-4 SoundTouch — alle in einem Boot durch
+    uint32_t  cronIntervalS = 600;    // periodischer Check alle 10 min wenn enabled
+                                       //   - light discovery (SSDP + knownIpProbe, kein /24-Sweep)
+                                       //   - refreshMigrationStatus (Auto-Claim/Release-Symmetrie)
+                                       //   - migrate neu erschienene eligible Speaker bis maxPerBoot
+                                       // Set to 0 to disable the periodic loop entirely.
 };
 
 struct AutoModeStatus {
     bool      ran                = false;
     bool      running            = false;
-    String    state              = "idle";  // "idle"/"discovering"/"import-presets"/"migrate-telnet"/"wait-reboot"/"done"
+    String    state              = "idle";  // idle/discovering/cron-discovering/import-presets/migrate-telnet/wait-reboot/done/cron-idle
     String    currentDeviceId    = "";
     int       speakersSeen       = 0;
     int       speakersEligible   = 0;
@@ -43,6 +48,9 @@ struct AutoModeStatus {
     String    lastError          = "";
     uint32_t  startedMs          = 0;
     uint32_t  finishedMs         = 0;
+    uint32_t  tickCount          = 0;       // 1 = initial boot pass, +1 per cron tick
+    uint32_t  lastTickFinishedMs = 0;       // for UI countdown to next tick
+    uint32_t  nextTickInS        = 0;       // computed snapshot, seconds until next cron tick
 };
 
 AutoModeConfig loadAutoModeConfig();

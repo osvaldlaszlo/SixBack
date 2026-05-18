@@ -366,16 +366,27 @@ async function loadAutoMode() {
                               : d.config.enabled ? 'migrated_us' : 'unknown');
     pill.textContent = running ? 'RUNNING' : (d.config.enabled ? 'ON' : 'OFF');
     let txt;
+    const fmtNext = s => {
+      if (!s || s <= 0) return '';
+      if (s < 60) return `${s}s`;
+      const m = Math.floor(s / 60), r = s % 60;
+      return r ? `${m}m ${r}s` : `${m}m`;
+    };
     if (running) {
       const dev = d.status.current_device || '';
       txt = `${d.status.state}` + (dev ? ` · ${dev}` : '');
     } else if (d.status.ran) {
       const st = d.status;
-      txt = `Last run · ${st.state} · ${st.speakers_migrated}/${st.speakers_eligible} migrated · ` +
+      const tick = st.tick_count > 1 ? `tick #${st.tick_count}` : 'last run';
+      txt = `${tick} · ${st.state} · ${st.speakers_migrated}/${st.speakers_eligible} migrated · ` +
             `${st.slots_normalized} slots (${st.slots_converted} converted, ${st.slots_abandoned} abandoned)`;
       if (st.last_error) txt += ` · ⚠ ${st.last_error}`;
+      const next = fmtNext(st.next_tick_in_s);
+      if (d.config.enabled && d.config.cron_interval_s > 0 && next) {
+        txt += ` · next cron tick in ${next}`;
+      }
     } else if (d.config.enabled) {
-      txt = `Will run on next ESP reboot — discovers + migrates eligible speakers (max ${d.config.max_per_boot}/boot).`;
+      txt = `Will run on next ESP reboot — discovers + migrates eligible speakers (max ${d.config.max_per_boot}/boot, then re-checks every ${fmtNext(d.config.cron_interval_s) || 'tick'}).`;
     } else {
       txt = 'Manual mode — use the Migrate buttons per speaker below.';
     }

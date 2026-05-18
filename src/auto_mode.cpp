@@ -225,35 +225,30 @@ void migrateOne_(Speaker& live) {
                   live.deviceId.c_str(), base.c_str());
 }
 
-void autoModeTask_(void* /*arg*/) {
-    AutoModeConfig cfg = loadAutoModeConfig();
-    if (!cfg.enabled) {
-        Serial.println("[auto] disabled (NVS auto_migrate_on_boot=false) — exit");
-        vTaskDelete(nullptr);
-        return;
-    }
-    Serial.printf("[auto] enabled  bootDelayMs=%u  dryRun=%d  maxPerBoot=%u\n",
-                  cfg.bootDelayMs, (int)cfg.dryRun, cfg.maxPerBoot);
-
-    delay(cfg.bootDelayMs);
+// Ein kompletter Migrations-Pass. `deep=true` ist die Initial-Boot-Variante
+// mit /24-Active-Scan-Wait; `deep=false` ist der Cron-Tick mit Light-Discovery.
+// Liefert true, wenn der Pass tatsaechlich gelaufen ist (false z.B. wenn WiFi
+// down). Aktualisiert g_status in beiden Faellen.
+bool runMigrationPass_(const AutoModeConfig& cfg, bool deep) {
     if (WiFi.status() != WL_CONNECTED) {
-        setError_("WiFi not up after boot delay — abort");
-        vTaskDelete(nullptr);
-        return;
+        setError_("WiFi not up — skipping pass");
+        return false;
     }
-
     {
         Lock_ l;
         g_status.running   = true;
         g_status.startedMs = millis();
     }
-
-    setState_("discovering");
-    SpeakerInventory::instance().discover();
-    uint32_t waitStart = millis();
-    while (SpeakerInventory::instance().isScanRunning()
-           && millis() - waitStart < 60000) {
-        delay(1000);
+    setState_(deep ? "discovering" : "cron-discovering");
+    if (deep) {
+        SpeakerInventory::instance().discover();
+        uint32_t waitStart = millis();
+        while (SpeakerInventory::instance().isScanRunning()
+               && millis() - waitStart < 60000) {
+            delay(1000);
+        }
+    } else {
+        SpeakerInventory::instance().discoverSync();
     }
 
     auto snapshot = SpeakerInventory::instance().list();
@@ -265,42 +260,91 @@ void autoModeTask_(void* /*arg*/) {
         g_status.speakersSeen     = (int)snapshot.size();
         g_status.speakersEligible = eligible;
     }
-    Serial.printf("[auto] discovery done: %d speakers total, %d eligible\n",
+    Serial.printf("[auto] %s done: %d speakers total, %d eligible\n",
+                  deep ? "discovery" : "cron-tick",
                   (int)snapshot.size(), eligible);
 
     if (cfg.dryRun) {
         Serial.println("[auto] dryRun=true — keine echte Migration");
         setState_("done-dryrun");
     } else if (eligible == 0) {
-        setState_("done-nothing-to-do");
+        setState_(deep ? "done-nothing-to-do" : "cron-idle");
     } else {
-        uint32_t doneThisBoot = 0;
+        uint32_t doneThisPass = 0;
         for (auto& snap : snapshot) {
             auto* live = SpeakerInventory::instance().findById(snap.deviceId);
             if (!live) continue;
             if (!isEligible_(*live, base)) continue;
-            if (doneThisBoot >= cfg.maxPerBoot) {
+            if (doneThisPass >= cfg.maxPerBoot) {
                 Serial.printf("[auto] maxPerBoot=%u reached — stop\n",
                               cfg.maxPerBoot);
                 break;
             }
             migrateOne_(*live);
-            ++doneThisBoot;
+            ++doneThisPass;
         }
-        setState_("done");
+        setState_(deep ? "done" : "cron-idle");
     }
 
     {
         Lock_ l;
-        g_status.ran             = true;
-        g_status.running         = false;
-        g_status.finishedMs      = millis();
-        g_status.currentDeviceId = "";
+        g_status.ran                = true;
+        g_status.running            = false;
+        g_status.finishedMs         = millis();
+        g_status.lastTickFinishedMs = millis();
+        g_status.tickCount++;
+        g_status.currentDeviceId    = "";
     }
-    Serial.printf("[auto] finished. migrated=%d converted=%d abandoned=%d\n",
-                  g_status.speakersMigrated, g_status.slotsConverted,
-                  g_status.slotsAbandoned);
-    vTaskDelete(nullptr);
+    return true;
+}
+
+void autoModeTask_(void* /*arg*/) {
+    AutoModeConfig cfg = loadAutoModeConfig();
+    Serial.printf("[auto] startup  enabled=%d  bootDelayMs=%u  dryRun=%d  "
+                  "maxPerBoot=%u  cronIntervalS=%u\n",
+                  (int)cfg.enabled, cfg.bootDelayMs, (int)cfg.dryRun,
+                  cfg.maxPerBoot, cfg.cronIntervalS);
+
+    if (!cfg.enabled) {
+        Serial.println("[auto] disabled at boot — task stays alive but idle "
+                       "(re-enable + reboot or wait for cron tick reload)");
+    } else {
+        delay(cfg.bootDelayMs);
+        runMigrationPass_(cfg, /*deep=*/true);
+        Serial.printf("[auto] initial pass finished. migrated=%d converted=%d "
+                      "abandoned=%d\n",
+                      g_status.speakersMigrated, g_status.slotsConverted,
+                      g_status.slotsAbandoned);
+    }
+
+    // Cron-Loop: alle cronIntervalS Sekunden ein Light-Pass.
+    // Reload der Config jedes Tick, damit Toggle via UI ohne Reboot greift.
+    while (true) {
+        // Config reload + interval (mit Lower-Bound 60 s als Foot-Gun-Guard)
+        cfg = loadAutoModeConfig();
+        uint32_t intervalMs = (cfg.cronIntervalS < 60 ? 60 : cfg.cronIntervalS) * 1000;
+        if (cfg.cronIntervalS == 0) {
+            // Cron disabled — schlafe trotzdem, damit Task lebt und Toggle greift
+            delay(60000);
+            continue;
+        }
+        // Sleep + Countdown pro Sekunde, damit Status.nextTickInS sinnvoll bleibt
+        uint32_t sleepStart = millis();
+        while (millis() - sleepStart < intervalMs) {
+            uint32_t elapsed   = (millis() - sleepStart) / 1000;
+            uint32_t remaining = (intervalMs / 1000) - elapsed;
+            { Lock_ l; g_status.nextTickInS = remaining; }
+            delay(1000);
+        }
+        // Tick aktivieren
+        cfg = loadAutoModeConfig();
+        if (!cfg.enabled) {
+            Serial.println("[auto] cron tick skipped — disabled");
+            continue;
+        }
+        Serial.printf("[auto] cron tick #%u starting\n", g_status.tickCount + 1);
+        runMigrationPass_(cfg, /*deep=*/false);
+    }
 }
 
 } // anon
@@ -310,21 +354,23 @@ AutoModeConfig loadAutoModeConfig() {
     JsonDocument doc;
     if (nvsLoadJson(NVS_NS, NVS_KEY, doc)) {
         // Defensiv: bei vorhandenem NVS-Record aber fehlenden Keys gelten
-        // die Image-Defaults aus AutoModeConfig (enabled=true, maxPerBoot=4).
-        c.enabled     = doc["enabled"]      | true;
-        c.dryRun      = doc["dry_run"]      | false;
-        c.bootDelayMs = doc["boot_delay_ms"]| (uint32_t)10000;
-        c.maxPerBoot  = doc["max_per_boot"] | (uint32_t)4;
+        // die Image-Defaults aus AutoModeConfig.
+        c.enabled       = doc["enabled"]         | true;
+        c.dryRun        = doc["dry_run"]         | false;
+        c.bootDelayMs   = doc["boot_delay_ms"]   | (uint32_t)10000;
+        c.maxPerBoot    = doc["max_per_boot"]    | (uint32_t)4;
+        c.cronIntervalS = doc["cron_interval_s"] | (uint32_t)600;
     }
     return c;
 }
 
 void saveAutoModeConfig(const AutoModeConfig& cfg) {
     JsonDocument doc;
-    doc["enabled"]       = cfg.enabled;
-    doc["dry_run"]       = cfg.dryRun;
-    doc["boot_delay_ms"] = cfg.bootDelayMs;
-    doc["max_per_boot"]  = cfg.maxPerBoot;
+    doc["enabled"]         = cfg.enabled;
+    doc["dry_run"]         = cfg.dryRun;
+    doc["boot_delay_ms"]   = cfg.bootDelayMs;
+    doc["max_per_boot"]    = cfg.maxPerBoot;
+    doc["cron_interval_s"] = cfg.cronIntervalS;
     nvsSaveJson(NVS_NS, NVS_KEY, doc);
 }
 

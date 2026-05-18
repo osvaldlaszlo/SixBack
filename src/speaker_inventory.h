@@ -59,6 +59,13 @@ public:
     // isScanRunning() wieder false ist.
     void discover();
 
+    // Lightweight-Discovery fuer periodische Cron-Checks: NUR knownIpProbe
+    // + SSDP-Burst + refreshMigrationStatus (~6 s total). KEIN /24-Active-
+    // Scan im Hintergrund. Geeignet fuer alle paar Minuten ausgefuehrte
+    // Auto-Mode-Cron-Ticks, ohne den HTTP-Server zu blockieren oder das
+    // LAN zu hammern.
+    void discoverSync();
+
     // True solange der Background-Active-Scan noch laeuft.
     bool isScanRunning() const { return scanRunning_; }
 

@@ -347,6 +347,16 @@ void SpeakerInventory::refreshMigrationStatus() {
     saveToNVS();
 }
 
+void SpeakerInventory::discoverSync() {
+    // Light variant fuer Cron-Ticks: nur Sync-Phasen, kein Background-Scan.
+    Serial.println("[inv] discoverSync (light)");
+    knownIpProbe_();
+    ssdpMSearch_();
+    refreshMigrationStatus();
+    Serial.printf("[inv] discoverSync done, %u speakers known\n",
+                  (unsigned)speakers_.size());
+}
+
 void SpeakerInventory::discover() {
     Serial.println("[inv] discovery starting (sync phase)");
     // Synchrone Phase, ~5 s: bekannte IPs + SSDP-Burst. Findet zuverlaessig
