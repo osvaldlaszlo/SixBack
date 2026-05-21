@@ -219,9 +219,44 @@ void handleDiscover(AsyncWebServerRequest* req) {
 void handleSpeakerAdd(AsyncWebServerRequest* req, JsonDocument& body) {
     String ip = (const char*)(body["ip"] | "");
     if (ip.length() == 0) { req->send(400, "application/json", "{\"error\":\"ip required\"}"); return; }
-    bool ok = bosefix::SpeakerInventory::instance().addByIp(ip);
-    req->send(ok ? 200 : 404, "application/json",
-              ok ? "{\"ok\":true}" : "{\"error\":\"speaker not reachable\"}");
+    bosefix::ProbeFailure fail;
+    bool ok = bosefix::SpeakerInventory::instance().addByIp(ip, &fail);
+    if (ok) {
+        req->send(200, "application/json", "{\"ok\":true}");
+        return;
+    }
+    // Strukturierter Fehler — UI kann reason+detail darstellen statt nur "failed"
+    String out = "{\"ok\":false,\"error\":\"probe_failed\",\"reason\":\"";
+    out += bosefix::probeFailReasonStr(fail.reason);
+    out += "\",\"detail\":\"";
+    String d = fail.detail; d.replace("\"", "'"); d.replace("\n", " ");
+    out += d;
+    out += "\",\"hint\":\"";
+    switch (fail.reason) {
+        case bosefix::ProbeFailReason::CONNECT_FAILED:
+            out += "Speaker antwortet nicht auf Port 8090. Pruefe ob die IP "
+                   "korrekt ist und der Speaker eingeschaltet ist. Wenn ein "
+                   "SoundTouch Portable im Standby ist, weckt ihn ein "
+                   "kurzer Button-Druck.";
+            break;
+        case bosefix::ProbeFailReason::HTTP_NOT_200:
+            out += "Port 8090 antwortet, liefert aber nicht HTTP 200. Ist die IP "
+                   "wirklich ein SoundTouch, oder etwas anderes?";
+            break;
+        case bosefix::ProbeFailReason::WRONG_BODY:
+        case bosefix::ProbeFailReason::EMPTY_BODY:
+            out += "Antwort kein Bose-/info-XML. Pruefe: curl http://" + ip +
+                   ":8090/info — was kommt zurueck?";
+            break;
+        case bosefix::ProbeFailReason::NO_DEVICE_ID:
+            out += "<info>-Tag vorhanden, aber kein deviceID-Attribut. Sehr "
+                   "ungewoehnlich — bitte XML-Body vom curl-Test mitschicken.";
+            break;
+        default:
+            out += "Unbekannter Fehler — bitte serielles Log mitschicken.";
+    }
+    out += "\"}";
+    req->send(404, "application/json", out);
 }
 
 void handleSpeakerDelete(AsyncWebServerRequest* req) {

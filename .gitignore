@@ -37,3 +37,4 @@ datasheet/
 # Entwickler-Referenz.
 docs/
 compile_commands.json
+webflasher/manifest.json

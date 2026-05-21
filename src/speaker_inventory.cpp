@@ -84,6 +84,19 @@ const char* migrationStatusToStr(MigrationStatus s) {
     }
 }
 
+const char* probeFailReasonStr(ProbeFailReason r) {
+    switch (r) {
+        case ProbeFailReason::OK:             return "ok";
+        case ProbeFailReason::HTTP_BEGIN:     return "http_begin_failed";
+        case ProbeFailReason::CONNECT_FAILED: return "connect_or_read_failed";
+        case ProbeFailReason::HTTP_NOT_200:   return "http_not_200";
+        case ProbeFailReason::EMPTY_BODY:     return "empty_body";
+        case ProbeFailReason::WRONG_BODY:     return "wrong_body";
+        case ProbeFailReason::NO_DEVICE_ID:   return "no_device_id";
+        default:                              return "unknown";
+    }
+}
+
 void SpeakerInventory::loadFromNVS() {
     LockGuard g(*this);
     JsonDocument doc;
@@ -151,19 +164,59 @@ void SpeakerInventory::mergeSpeaker_(const Speaker& s) {
 }
 
 bool SpeakerInventory::probeIp_(const String& ip, Speaker& out,
-                                 uint16_t connectMs, uint16_t readMs) {
+                                 uint16_t connectMs, uint16_t readMs,
+                                 ProbeFailure* failOut) {
+    auto setFail = [&](ProbeFailReason r, const String& d) {
+        if (failOut) { failOut->reason = r; failOut->detail = d; }
+    };
     HTTPClient http;
     http.setReuse(false);
     http.setConnectTimeout(connectMs);
     http.setTimeout(readMs);
     String url = "http://" + ip + ":" + String(BOSE_BMX_PORT) + "/info";
-    if (!http.begin(url)) return false;
+    if (!http.begin(url)) {
+        Serial.printf("[probe] %s http.begin() failed (URL invalid?)\n", ip.c_str());
+        setFail(ProbeFailReason::HTTP_BEGIN, "http.begin() returned false");
+        return false;
+    }
+    uint32_t t0 = millis();
     int code = http.GET();
-    if (code != 200) { http.end(); return false; }
+    uint32_t dt = millis() - t0;
+    if (code <= 0) {
+        // Negative codes = HTTPClient internal errors (-1 connect, -11 read-timeout, etc.)
+        Serial.printf("[probe] %s connect/read failed (%d) after %u ms — timeout=%u/%u\n",
+                      ip.c_str(), code, dt, connectMs, readMs);
+        http.end();
+        setFail(ProbeFailReason::CONNECT_FAILED,
+                String("HTTP client error code=") + String(code) +
+                ", elapsed=" + String(dt) + "ms, connectTimeout=" +
+                String(connectMs) + "ms readTimeout=" + String(readMs) + "ms");
+        return false;
+    }
+    if (code != 200) {
+        Serial.printf("[probe] %s HTTP %d (expected 200) after %u ms\n",
+                      ip.c_str(), code, dt);
+        http.end();
+        setFail(ProbeFailReason::HTTP_NOT_200,
+                String("HTTP ") + String(code) + " (expected 200)");
+        return false;
+    }
     String xml = http.getString();
     http.end();
-    // Validierung: muss ein Bose-/info-XML sein
-    if (xml.indexOf("<info") < 0) return false;
+    if (xml.length() == 0) {
+        Serial.printf("[probe] %s empty body after HTTP 200\n", ip.c_str());
+        setFail(ProbeFailReason::EMPTY_BODY, "HTTP 200 but empty body");
+        return false;
+    }
+    if (xml.indexOf("<info") < 0) {
+        Serial.printf("[probe] %s body has no <info ...> tag (len=%u, first=%.60s)\n",
+                      ip.c_str(), (unsigned)xml.length(),
+                      xml.c_str() ? xml.c_str() : "");
+        setFail(ProbeFailReason::WRONG_BODY,
+                String("HTTP 200 but body lacks <info ...> tag (len=") +
+                String(xml.length()) + ")");
+        return false;
+    }
     out.deviceId  = xmlAttr(xml, "deviceID");
     out.name      = xmlValue(xml, "name");
     out.model     = xmlValue(xml, "type");
@@ -171,7 +224,16 @@ bool SpeakerInventory::probeIp_(const String& ip, Speaker& out,
     out.accountId = xmlValue(xml, "margeAccountUUID");
     out.ip        = ip;
     out.status    = MigrationStatus::UNKNOWN;
-    return out.deviceId.length() > 0;
+    if (out.deviceId.length() == 0) {
+        Serial.printf("[probe] %s <info> present but deviceID attribute empty\n", ip.c_str());
+        setFail(ProbeFailReason::NO_DEVICE_ID,
+                "<info> tag present but deviceID attribute empty");
+        return false;
+    }
+    Serial.printf("[probe] %s OK after %u ms — %s (%s)\n",
+                  ip.c_str(), dt, out.name.c_str(), out.model.c_str());
+    if (failOut) failOut->reason = ProbeFailReason::OK;
+    return true;
 }
 
 void SpeakerInventory::ssdpMSearch_() {
@@ -464,9 +526,14 @@ void SpeakerInventory::discover() {
     }
 }
 
-bool SpeakerInventory::addByIp(const String& ip) {
+bool SpeakerInventory::addByIp(const String& ip, ProbeFailure* failOut) {
     Speaker s;
-    if (!probeIp_(ip, s)) return false;
+    // Manueller Add verdient grosszuegigere Timeouts als SSDP-Background-
+    // Probe — User wartet aktiv, Speaker im Standby (SoundTouch Portable)
+    // kann ein paar Sekunden brauchen bis er antwortet.
+    constexpr uint16_t MANUAL_CONNECT_MS = 2500;
+    constexpr uint16_t MANUAL_READ_MS    = 5000;
+    if (!probeIp_(ip, s, MANUAL_CONNECT_MS, MANUAL_READ_MS, failOut)) return false;
     String myBase = "http://" + WiFi.localIP().toString() + ":" + String(BOSE_HTTP_PORT);
     // detectStatus ist Telnet — bewusst OHNE Lock; danach unter Lock mergen.
     String cloudUrl;

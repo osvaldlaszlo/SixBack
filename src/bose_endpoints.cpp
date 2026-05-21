@@ -366,6 +366,37 @@ void handleAccountFull(AsyncWebServerRequest* req) {
     // account/full-Sync ueberschreibt Speaker seinen Cache mit acct="".
     body +=   "<username>TuneIn</username>";
     body += "</source>";
+    // STORED_MUSIC (sourceproviderid=7) — accountless, lokal am Speaker.
+    // Wichtig fuer User mit DLNA/UPnP-Presets (Fritzbox-Mediaserver etc.):
+    // wenn diese Source NICHT im account/full deklariert ist, streicht
+    // der Speaker bestehende STORED_MUSIC-Presets nach Migration zu uns
+    // und zeigt "Quelle nicht vorhanden" beim /select.
+    // Forum-Bericht fred_feuerstein 2026-05-21: ST20 verlor 6 DLNA-Presets
+    // nach Migration zu BoseFix32. Verified-Hypothese: sources-Block-Defizit.
+    body += "<source id=\"10005\" type=\"Audio\">";
+    body +=   "<createdOn>"; body += kFakeTs; body += "</createdOn>";
+    body +=   "<credential type=\"token\"></credential>";
+    body +=   "<name>STORED_MUSIC</name>";
+    body +=   "<sourceproviderid>7</sourceproviderid>";
+    body +=   "<sourcename></sourcename>";
+    body +=   "<sourceSettings/>";
+    body +=   "<updatedOn>"; body += kFakeTs; body += "</updatedOn>";
+    body +=   "<username></username>";
+    body += "</source>";
+    // STORED_MUSIC_MEDIA_RENDERER + UPNP — wir wissen aus dem speaker-side
+    // /sources-Endpoint dass diese beiden im "natuerlichen" Bose-State als
+    // UNAVAILABLE drinstehen. Symmetrie wahren: wir deklarieren sie hier
+    // damit der Speaker sie nicht als "abgekuendigt" wahrnimmt.
+    body += "<source id=\"10006\" type=\"Audio\">";
+    body +=   "<createdOn>"; body += kFakeTs; body += "</createdOn>";
+    body +=   "<credential type=\"token\"></credential>";
+    body +=   "<name>STORED_MUSIC_MEDIA_RENDERER</name>";
+    body +=   "<sourceproviderid>7</sourceproviderid>";
+    body +=   "<sourcename></sourcename>";
+    body +=   "<sourceSettings/>";
+    body +=   "<updatedOn>"; body += kFakeTs; body += "</updatedOn>";
+    body +=   "<username></username>";
+    body += "</source>";
     body += "</sources>";
 
     body += "</account>";
@@ -383,6 +414,8 @@ void handleAccountSources(AsyncWebServerRequest* req) {
                   "<source id=\"";
     body += kTuneinAcctSourceId;
     body += "\" type=\"Audio\"><sourceproviderid>25</sourceproviderid><credential type=\"token\">bf32-tunein-token</credential></source>"
+            "<source id=\"10005\"><name>STORED_MUSIC</name><sourceproviderid>7</sourceproviderid></source>"
+            "<source id=\"10006\"><name>STORED_MUSIC_MEDIA_RENDERER</name><sourceproviderid>7</sourceproviderid></source>"
             "</sources>";
     req->send(200, "application/vnd.bose.streaming-v1.2+xml", body);
 }

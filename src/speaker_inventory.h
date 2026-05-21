@@ -43,6 +43,23 @@ struct Speaker {
     String groupId;         // freitext, default ""
 };
 
+enum class ProbeFailReason : uint8_t {
+    OK = 0,
+    HTTP_BEGIN,        // http.begin() returnte false (URL kaputt)
+    CONNECT_FAILED,    // negative HTTPClient-Code (Timeout, Connection refused)
+    HTTP_NOT_200,      // Speaker antwortet, aber nicht mit 200
+    EMPTY_BODY,        // HTTP 200, aber Body 0 Bytes
+    WRONG_BODY,        // HTTP 200, aber <info ...> nicht gefunden
+    NO_DEVICE_ID,      // <info> da, aber deviceID-Attribut leer/fehlt
+};
+
+struct ProbeFailure {
+    ProbeFailReason reason = ProbeFailReason::OK;
+    String          detail;
+};
+
+const char* probeFailReasonStr(ProbeFailReason r);
+
 class SpeakerInventory {
 public:
     static SpeakerInventory& instance();
@@ -93,8 +110,10 @@ public:
     // Liefert read-only-Kopie der Liste fuer UI/API. Lock intern.
     std::vector<Speaker> list();
 
-    // Manuelles Hinzufuegen per IP (z.B. wenn SSDP nichts liefert).
-    bool addByIp(const String& ip);
+    // Manuelles Hinzufuegen per IP (z.B. wenn SSDP nichts liefert). Wenn
+    // `failOut` gesetzt ist und der probe fehlschlaegt, wird der Grund dort
+    // abgelegt — fuer Diagnose-API/UI-Anzeige.
+    bool addByIp(const String& ip, ProbeFailure* failOut = nullptr);
 
     // Loescht einen Speaker aus dem Cache (nicht vom Geraet).
     bool remove(const String& deviceId);
@@ -114,7 +133,8 @@ private:
     SpeakerInventory() = default;
     void mergeSpeaker_(const Speaker& s);
     bool probeIp_(const String& ip, Speaker& out,
-                  uint16_t connectMs = 800, uint16_t readMs = 1500);
+                  uint16_t connectMs = 800, uint16_t readMs = 1500,
+                  ProbeFailure* failOut = nullptr);
     void knownIpProbe_();
     void ssdpMSearch_();
     void activeScan_();

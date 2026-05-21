@@ -97,6 +97,23 @@ void startImprovMode() {
     if (WiFi.getMode() == WIFI_MODE_NULL) {
         WiFi.mode(WIFI_STA);
     }
+    // Country-Code / Scan-Range EXPLIZIT auf EU-2.4GHz (Ch 1-13) setzen.
+    // Default ist `CN` o.ae. mit policy=AUTO, was bei ESP32-C6 + WiFi-6-
+    // Stack in einen NO_AP_FOUND-Pfad fuehrt wenn der AP auf Ch 12/13
+    // sitzt (typisch nach Fritzbox-Auto-Channel-Selection). S3/C3 sind
+    // toleranter, C6 strikter — daher symptomatisch nur C6-Boards.
+    // POLICY_MANUAL stellt sicher dass der Connect-Pfad NICHT per
+    // Beacon-Override auf einen restriktiveren Channel-Set zurueckfaellt.
+    {
+        wifi_country_t c = {
+            .cc      = "DE",
+            .schan   = 1,
+            .nchan   = 13,
+            .max_tx_power = 78,    // 19.5 dBm — Default Arduino-Core
+            .policy  = WIFI_COUNTRY_POLICY_MANUAL,
+        };
+        esp_wifi_set_country(&c);
+    }
     // PS-Mode AUS *VOR* irgendeinem WiFi.begin() — gilt sowohl fuer
     // tryConnectFromNVS als auch fuer den begin(), den die improv-Lib
     // bei Send-WiFi-Settings selbst ausfuehrt. C6+WiFi-6-Defaults

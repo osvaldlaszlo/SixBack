@@ -268,6 +268,7 @@
     <h3>Add speaker manually</h3>
     <label>IP address</label>
     <input type="text" id="add-ip" placeholder="10.10.11.196">
+    <div id="add-error" style="display:none; margin-top:10px; padding:8px 12px; border-radius:4px; background:#5a2222; color:#ffbcbc; font-size:13px; line-height:1.4;"></div>
     <div class="row">
       <button onclick="closeModal('modal-add')">Cancel</button>
       <button class="primary" onclick="submitAdd()">Add</button>
@@ -1181,16 +1182,42 @@ async function refreshStatuses() {
 }
 
 // ---- Add modal ----
-function openAddModal() { openModal('modal-add'); document.getElementById('add-ip').value=''; }
+function openAddModal() {
+  openModal('modal-add');
+  document.getElementById('add-ip').value='';
+  document.getElementById('add-error').style.display='none';
+  document.getElementById('add-error').textContent='';
+}
 async function submitAdd() {
   const ip = document.getElementById('add-ip').value.trim();
   if (!ip) return;
+  const errEl = document.getElementById('add-error');
+  errEl.style.display='none';
+  // Direkter fetch statt api()-Helper, damit wir den strukturierten Fehler lesen koennen.
+  let resp;
   try {
-    await api('/api/speakers/add', {
+    resp = await fetch('/api/speakers/add', {
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({ip})});
+  } catch (e) {
+    errEl.textContent = 'Netzwerk-Fehler: ' + e.message;
+    errEl.style.display='block';
+    return;
+  }
+  let body = {};
+  try { body = await resp.json(); } catch(_) { /* ignore */ }
+  if (resp.ok && body.ok) {
     closeModal('modal-add'); await loadSpeakers(); toast('Added');
-  } catch(e) { toast(e.message, 'error'); }
+    return;
+  }
+  // Strukturierter Fehler — Reason + Hint anzeigen, Modal offen lassen
+  const reason = body.reason || 'unknown';
+  const hint   = body.hint   || '';
+  const detail = body.detail || '';
+  errEl.innerHTML = '<b>Fehlgeschlagen:</b> ' + reason +
+    (hint   ? '<br><span style="color:#ffe0e0">' + hint + '</span>' : '') +
+    (detail ? '<br><span style="font-size:11px;opacity:0.7">' + detail + '</span>' : '');
+  errEl.style.display='block';
 }
 
 // ---- Preset modal ----
