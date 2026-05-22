@@ -4,12 +4,12 @@
 #ifndef BOSEFIX32_VERSION_H
 #define BOSEFIX32_VERSION_H
 
-#define FW_NAME           "BoseFix32"
+#define FW_NAME           "SixBack"
 #define FW_VERSION_MAJOR  0
-#define FW_VERSION_MINOR  6
-#define FW_VERSION_BUILD  480
+#define FW_VERSION_MINOR  7
+#define FW_VERSION_BUILD  603
 
-#define FW_VERSION_STRING "0.6.480"
-#define FW_BUILD_DATE     "2026-05-21 16:15:01"
+#define FW_VERSION_STRING "0.7.603"
+#define FW_BUILD_DATE     "2026-05-22 15:38:01"
 
 #endif // BOSEFIX32_VERSION_H

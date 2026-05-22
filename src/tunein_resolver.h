@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// BoseFix32 — TuneIn-Live-Resolver mit Cache + User-Override
+// SixBack — TuneIn-Live-Resolver mit Cache + User-Override
 //
 // Resolver-Pipeline:
 //   1. PresetStore: gibt es einen Override (streamUrl) fuer diese stationId?
 //      -> Bose-JSON-Wrapper, kein TuneIn-Call.
-//   2. NVS-Cache (Namespace bosefix-tune): TTL 7 Tage.
+//   2. NVS-Cache (Namespace sixback-tune): TTL 7 Tage.
 //      -> Cache-Hit -> JSON sofort aus Cache.
 //   3. HTTP-GET zu http://opml.radiotime.com/Tune.ashx?id=<id>&render=json
 //      -> Stream-URL extrahieren, in NVS cachen, JSON bauen.
@@ -15,7 +15,7 @@
 
 #include <Arduino.h>
 
-namespace bosefix {
+namespace sixback {
 
 struct TuneInResolution {
     String stationId;
@@ -28,7 +28,7 @@ struct TuneInResolution {
 
 TuneInResolution resolveTuneInStruct(const String& stationId);
 
-} // namespace bosefix
+} // namespace sixback
 
 // Legacy/compat — Phase-0-API.
 String resolveTuneInStation(const String& stationId);

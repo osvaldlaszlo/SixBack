@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// BoseFix32 — Bose Cloud Replacement Endpoints
+// SixBack — Bose Cloud Replacement Endpoints
 //
 // Verifizierte Pflicht-Endpoints aus den AfterTouch-Live-Logs (Pi5-Migration
 // Kueche 2026-05-16). Phase 1: alle 11 Endpoints mit echten Bodies, plus
@@ -14,10 +14,13 @@
 #include "config.h"
 #include <Arduino.h>
 #include <ArduinoJson.h>
+#include <HTTPClient.h>
 #include <LittleFS.h>
+#include <set>
 #include <WiFi.h>
 #include <map>
 #include <vector>
+#include <algorithm>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 
@@ -70,7 +73,7 @@ void handleSCMUDCFinalize(AsyncWebServerRequest* req) {
 void handleSCMUDCBody(AsyncWebServerRequest* req,
                       uint8_t* data, size_t len, size_t index, size_t total) {
     String devId = req->pathArg(0);
-    bosefix::eventStoreIngestChunk(devId, data, len, index, total);
+    sixback::eventStoreIngestChunk(devId, data, len, index, total);
 }
 
 // -----------------------------------------------------------------------------
@@ -129,14 +132,33 @@ void handlePowerOn(AsyncWebServerRequest* req) {
 // Logik die "account-bound TUNEIN"-Variante wieder findet.
 // -----------------------------------------------------------------------------
 
-// Konstante Source-IDs in unserer XML (frei vergeben, aber stabil):
-//   INTERNET_RADIO (provider 2, generic radio)       -> 10002
-//   LOCAL_INTERNET_RADIO (provider 11, our stream)   -> 10003
-//   TUNEIN legacy (provider 3, ohne Credential)      -> 10004
-//   TUNEIN account-bound (provider 25, mit Token)    -> 19989342
-//                                  -^ Ueberboese-Referenz-Id, beliebig
-static constexpr const char* kTuneinAcctSourceId = "19989342";
-static constexpr const char* kFakeTs             = "2020-01-01T00:00:00.000+00:00";
+// 2026-05-21 Bosman-Schema-Replay (proxy-capture-verified):
+//   Bosman vergibt sequenzielle source-IDs 1,2,3,4,5,... — KEINE 10000+-Range.
+//   Reihenfolge: 1=TUNEIN(25), 2=RADIO_BROWSER(39), 3=LOCAL_INTERNET_RADIO(11),
+//                4..N=STORED_MUSIC(7) pro DLNA-UUID.
+//   Presets referenzieren die source ueber id=N (Bosman-Preset-Block:
+//     <source id="4" type="Audio"> ... <username>UUID/0</username></source>).
+static constexpr const char* kSrcIdTuneIn          = "1";
+static constexpr const char* kSrcIdRadioBrowser    = "2";
+static constexpr const char* kSrcIdLocalIntRadio   = "3";
+static constexpr int         kSrcIdStoredMusicBase = 4;  // erste UUID-Source
+
+// Timestamps in Bosman-Form: ISO mit ms+Z. Bosman-2012-Referenz fuer
+// "ewige" Records, "heute" fuer per-Speaker-Created. Wir bleiben pragmatisch
+// und nehmen einen festen Stempel — Speaker akzeptiert alles ISO8601.
+static constexpr const char* kFakeTs        = "2020-01-01T00:00:00.000+00:00";
+static constexpr const char* kBosmanInitTs  = "2012-09-19T12:43:00.000+00:00";  // Bosman-Genesis-Stempel
+
+// Etag muss konsistent ueber Calls auf gleichen Content sein (content-hash-
+// artig). Bosman benutzt 13-stellige Unix-millis. Wir nehmen einen deterministischen
+// counter pro Content-Type, der nur wechselt wenn sich content aendert.
+static String etagFor_(const String& tag) {
+    return String("1779") + String((uint32_t)(tag.length() * 7919 + 100000)) + "008";
+}
+
+// Bosman-XML-Decl (standalone=yes, KEIN encoding-attribute)
+static constexpr const char* kXmlDeclBosman =
+    "<?xml version=\"1.0\" standalone=\"yes\"?>";
 
 // model -> attachedProduct{product_code, productlabel}
 static void modelToProduct_(const String& model, String& outProductCode, String& outLabel) {
@@ -172,67 +194,118 @@ static String xmlEsc_(const String& in) {
     return o;
 }
 
-// Pro-Device Preset-Block in ueberboese-Form (mit eingebettetem <source>-
-// Tag, der den Account-Source-Eintrag referenziert).
-static String buildDevicePresets_(const String& deviceId) {
+// Pro-Device Preset-Block im Bosman-Schema (proxy-capture-verified
+// 2026-05-21, siehe reference_bosman_cloud_schema.md). Emittiert pro Slot
+// einen <preset buttonNumber="N">-Block mit eingebettetem <source>-Verweis
+// auf eine source-id aus dem <sources>-Block der Account-Antwort. Fuer
+// OPAQUE-Slots (STORED_MUSIC / DLNA) wird location + name aus rawContentItem
+// extrahiert und die source-id ueber die UUID->ID-Map des Callers aufgeloest.
+//
+// uuidToSrcId: muss vom Caller (handleAccountFull) IDENTISCH zur /sources-
+// Block-Allokation gebaut werden (kSrcIdStoredMusicBase + first-occurrence
+// in matched-speakers). Ohne diese Map wuerden OPAQUE-Slots auf eine
+// nicht-existente source-id verweisen und der Speaker wuerde den Slot
+// verwerfen.
+static String buildDevicePresets_(const String& deviceId,
+                                  const std::map<String, int>& uuidToSrcId) {
     // Wenn der Store keine Presets fuer das Device hat, KEIN <presets>-Element
     // ausgeben — das gibt dem Speaker das Signal "Cloud sagt nichts dazu" und
     // verhindert dass er seinen Local-Cache mit unserer leeren Liste
     // ueberschreibt (siehe handleDevicePresets-Kommentar).
-    if (!bosefix::PresetStore::instance().hasAnyFor(deviceId)) {
+    if (!sixback::PresetStore::instance().hasAnyFor(deviceId)) {
         return String();
     }
-    auto presets = bosefix::PresetStore::instance().getForSpeaker(deviceId);
-    // Erst zaehlen ob ueberhaupt non-OPAQUE-Slots ausgegeben werden. Wenn nur
-    // OPAQUE-Slots im Store sind, geben wir GAR KEIN <presets>-Element aus —
-    // der Speaker behaelt damit seinen Local-Cache mit den Original-
-    // ContentItems unangetastet (gleiche Defense wie bei komplett leerem Store).
-    int renderable = 0;
+    auto presets = sixback::PresetStore::instance().getForSpeaker(deviceId);
+    int nonEmpty = 0;
     for (const auto& p : presets) {
-        if (p.source != bosefix::PresetSource::EMPTY &&
-            p.source != bosefix::PresetSource::OPAQUE) ++renderable;
+        if (p.source != sixback::PresetSource::EMPTY) ++nonEmpty;
     }
-    if (renderable == 0) return String();
+    if (nonEmpty == 0) return String();
 
     String out = "<presets>";
     for (const auto& p : presets) {
-        if (p.source == bosefix::PresetSource::EMPTY) continue;
-        // OPAQUE: Speaker hat das Original-ContentItem im Local-Cache. account/
-        // full-Schema hat keinen Slot fuer raw ContentItems (anderes XML-Format
-        // als /presets-direct). Slot weglassen → Speaker behaelt was er hat.
-        if (p.source == bosefix::PresetSource::OPAQUE) continue;
+        if (p.source == sixback::PresetSource::EMPTY) continue;
+
+        // OPAQUE-Slots (STORED_MUSIC / DLNA / UPnP): Bosman-Schema-konformen
+        // <preset>-Block bauen aus rawContentItem. Ohne diesen Block wuerde
+        // der Speaker den Slot beim naechsten /full-Pull als "Cloud sagt
+        // geloescht" interpretieren und lokal verwerfen — siehe
+        // reference_bosman_cloud_schema.md Z.63-82.
+        if (p.source == sixback::PresetSource::OPAQUE) {
+            const String& raw = p.rawContentItem;
+            int locStart = raw.indexOf("location=\"");
+            int saStart  = raw.indexOf("sourceAccount=\"");
+            int nmStart  = raw.indexOf("<itemName>");
+            if (locStart < 0 || saStart < 0 || nmStart < 0) continue;
+            int locEnd = raw.indexOf("\"", locStart + 10);
+            int saEnd  = raw.indexOf("\"", saStart + 15);
+            int nmEnd  = raw.indexOf("</itemName>", nmStart);
+            if (locEnd < 0 || saEnd < 0 || nmEnd < 0) continue;
+            String location      = raw.substring(locStart + 10, locEnd);
+            String sourceAccount = raw.substring(saStart + 15, saEnd);
+            String itemName      = raw.substring(nmStart + 10, nmEnd);
+            // UUID ohne "/0"-Suffix fuer Lookup in uuidToSrcId
+            String uuid = sourceAccount;
+            int slash = uuid.indexOf('/');
+            if (slash >= 0) uuid = uuid.substring(0, slash);
+            auto it = uuidToSrcId.find(uuid);
+            if (it == uuidToSrcId.end()) continue;  // UUID nicht in /sources — Slot skippen
+            int srcId = it->second;
+            out += "<preset buttonNumber=\""; out += String(p.slot); out += "\">";
+            out += "<containerArt></containerArt>";
+            out += "<contentItemType></contentItemType>";
+            out += "<createdOn>"; out += kFakeTs; out += "</createdOn>";
+            out += "<location>"; out += xmlEsc_(location); out += "</location>";
+            out += "<name>"; out += xmlEsc_(itemName); out += "</name>";
+            out += "<source id=\""; out += String(srcId); out += "\" type=\"Audio\">";
+            out += "<createdOn>"; out += kFakeTs; out += "</createdOn>";
+            out += "<credential type=\"token\"></credential>";
+            out += "<name>"; out += xmlEsc_(uuid); out += "</name>";
+            out += "<sourceproviderid>7</sourceproviderid>";
+            out += "<sourcename>STORED_MUSIC</sourcename>";
+            out += "<sourceSettings/>";
+            out += "<updatedOn>"; out += kFakeTs; out += "</updatedOn>";
+            out += "<username>"; out += xmlEsc_(sourceAccount); out += "</username>";
+            out += "</source>";
+            out += "<updatedOn>"; out += kFakeTs; out += "</updatedOn>";
+            out += "</preset>";
+            continue;
+        }
         out += "<preset buttonNumber=\""; out += String(p.slot); out += "\">";
         out += "<containerArt>"; out += xmlEsc_(p.imageUrl); out += "</containerArt>";
         out += "<contentItemType>stationurl</contentItemType>";
         out += "<createdOn>"; out += kFakeTs; out += "</createdOn>";
         out += "<location>";
-        if (p.source == bosefix::PresetSource::TUNEIN) {
+        if (p.source == sixback::PresetSource::TUNEIN) {
             out += "/v1/playback/station/"; out += xmlEsc_(p.stationId);
         } else {
             out += xmlEsc_(p.streamUrl);
         }
         out += "</location>";
         out += "<name>"; out += xmlEsc_(p.name); out += "</name>";
-        // Eingebetteter Source-Verweis: Provider/Id passend zum Preset-Typ
-        if (p.source == bosefix::PresetSource::TUNEIN) {
-            out += "<source id=\""; out += kTuneinAcctSourceId; out += "\" type=\"Audio\">";
+        // Eingebetteter Source-Verweis nach Bosman-Schema:
+        //   <source id="N" type="Audio"><createdOn>../<credential type="token"></credential>
+        //   <name>display</name><sourceproviderid>P</sourceproviderid>
+        //   <sourcename>NAME</sourcename><sourceSettings/><updatedOn>..
+        //   <username>account</username></source>
+        if (p.source == sixback::PresetSource::TUNEIN) {
+            out += "<source id=\""; out += kSrcIdTuneIn; out += "\" type=\"Audio\">";
             out += "<createdOn>"; out += kFakeTs; out += "</createdOn>";
-            out += "<credential type=\"token\">bf32-tunein-token</credential>";
-            out += "<name></name>";
+            out += "<credential type=\"token\"></credential>";
+            out += "<name>TuneIn</name>";
             out += "<sourceproviderid>25</sourceproviderid>";
-            out += "<sourcename></sourcename>";
+            out += "<sourcename>TUNEIN</sourcename>";
             out += "<sourceSettings/>";
             out += "<updatedOn>"; out += kFakeTs; out += "</updatedOn>";
-            // username = sourceAccount-Quelle (siehe handleAccountFull-Kommentar)
-            out += "<username>TuneIn</username>";
+            out += "<username></username>";
             out += "</source>";
         } else {
-            out += "<source id=\"10003\" type=\"Audio\">";
+            out += "<source id=\""; out += kSrcIdLocalIntRadio; out += "\" type=\"Audio\">";
             out += "<createdOn>"; out += kFakeTs; out += "</createdOn>";
-            out += "<credential type=\"token\">eyJzZXJpYWwiOiJsb2NhbC1pbnRlcm5ldC1yYWRpbyJ9</credential>";
-            out += "<name></name>";
+            out += "<credential type=\"token\"></credential>";
+            out += "<name>Local Internet Radio</name>";
             out += "<sourceproviderid>11</sourceproviderid>";
-            out += "<sourcename></sourcename>";
+            out += "<sourcename>LOCAL_INTERNET_RADIO</sourcename>";
             out += "<sourceSettings/>";
             out += "<updatedOn>"; out += kFakeTs; out += "</updatedOn>";
             out += "<username></username>";
@@ -246,6 +319,47 @@ static String buildDevicePresets_(const String& deviceId) {
     return out;
 }
 
+// Pre-Probe: query a speaker's /sources via BMX-API, return the set of
+// UUIDs (without "/0" suffix) that the speaker reports as
+// <sourceItem source="STORED_MUSIC" sourceAccount="<UUID>/0" status="READY">.
+// Used by handleAccountFull/handleAccountSources to AVOID emitting our own
+// generic <source>-blocks for those UUIDs — empirisch verifiziert 2026-05-21:
+// wenn unser account/full den UUID-source-Block enthaelt, ueberschreibt
+// der Speaker seinen lokalen <sourceItem READY>-state mit Default UNAVAILABLE,
+// und die DLNA-Presets brechen mit 1005 UNKNOWN_SOURCE_ERROR. Skippen wir
+// den block, behaelt der Speaker den bereits eingerichteten state.
+static std::set<String> probeSpeakerStoredMusicReadyUuids_(const String& speakerIp) {
+    std::set<String> result;
+    if (speakerIp.length() == 0) return result;
+    HTTPClient http;
+    String url = "http://" + speakerIp + ":8090/sources";
+    if (!http.begin(url)) return result;
+    http.setTimeout(1500);
+    int code = http.GET();
+    if (code != 200) { http.end(); return result; }
+    String body = http.getString();
+    http.end();
+    int pos = 0;
+    while ((pos = body.indexOf("<sourceItem ", pos)) >= 0) {
+        int endTag = body.indexOf(">", pos);
+        if (endTag < 0) break;
+        String tag = body.substring(pos, endTag);
+        pos = endTag + 1;
+        if (tag.indexOf("source=\"STORED_MUSIC\"") < 0) continue;
+        if (tag.indexOf("status=\"READY\"") < 0) continue;
+        int accPos = tag.indexOf("sourceAccount=\"");
+        if (accPos < 0) continue;
+        int accStart = accPos + 15;
+        int accEnd = tag.indexOf("\"", accStart);
+        if (accEnd < 0) continue;
+        String acc = tag.substring(accStart, accEnd);
+        int slash = acc.indexOf("/");
+        String uuid = (slash > 0) ? acc.substring(0, slash) : acc;
+        if (uuid.length() > 0) result.insert(uuid);
+    }
+    return result;
+}
+
 void handleAccountFull(AsyncWebServerRequest* req) {
     String acct = req->pathArg(0);
 
@@ -254,8 +368,8 @@ void handleAccountFull(AsyncWebServerRequest* req) {
     // dann liefern wir ALLE Speaker (akzeptieren also dass der Speaker
     // sich selbst in dem device-Block wiederfindet, auch wenn die acct-
     // Verknuepfung im Inventory noch nicht aufgebaut wurde).
-    auto allSpeakers = bosefix::SpeakerInventory::instance().list();
-    std::vector<bosefix::Speaker> matched;
+    auto allSpeakers = sixback::SpeakerInventory::instance().list();
+    std::vector<sixback::Speaker> matched;
     for (const auto& s : allSpeakers) if (s.accountId == acct) matched.push_back(s);
     if (matched.empty()) matched = allSpeakers;
 
@@ -273,151 +387,238 @@ void handleAccountFull(AsyncWebServerRequest* req) {
     // interpretiert und seinen Cache geleert — anstatt wie bei 404
     // ("Cloud antwortet nicht") seinen Cache zu behalten.
     bool anySeeded = false;
+    bool anyMediaServers = false;
     for (const auto& s : matched) {
-        if (bosefix::PresetStore::instance().hasAnyFor(s.deviceId)) {
-            anySeeded = true;
-            break;
-        }
+        if (sixback::PresetStore::instance().hasAnyFor(s.deviceId)) anySeeded = true;
+        if (!s.mediaServerUuids.empty()) anyMediaServers = true;
     }
-    if (!anySeeded) {
-        Serial.println("[bmx][safe] account/full -> 404 (no preset stores seeded — schuetzt Speaker-Cache)");
+    // 2026-05-21: Defense gelockert — wenn der Speaker mediaServerUuids hat,
+    // muessen wir das Bosman-Schema mit den UUID-Sources auch ohne Presets
+    // ausliefern, sonst kann der Speaker nach Migration STORED_MUSIC mit
+    // sourceAccount=UUID/0 nie auf READY setzen. Test 2026-05-21 mit Küche
+    // (presets leer, 3 DLNA-UUIDs bekannt) zeigte: ohne diesen Fix bleibt
+    // /full=404 und Küche kennt die UUID-Sources nicht.
+    if (!anySeeded && !anyMediaServers) {
+        Serial.println("[bmx][safe] account/full -> 404 (kein Preset-Store + keine UUIDs — schuetzt Speaker-Cache)");
         req->send(404, "application/vnd.bose.streaming-v1.2+xml", "");
         return;
     }
 
     String body;
-    body.reserve(3072);
-    body  = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n";
-    body += "<account id=\""; body += xmlEsc_(acct); body += "\">";
-    body += "<accountStatus>REGISTERED</accountStatus>";
+    body.reserve(4096);
+
+    // Bosman-Schema 1:1 (proxy-capture-verified 2026-05-21):
+    //   <?xml version="1.0" standalone="yes"?>
+    //   <account><id>X</id><accountStatus>ENABLED</accountStatus>
+    //     <devices>...</devices>
+    //     <mode>global</mode><preferredLanguage>en</preferredLanguage>
+    //     <providerSettings/>
+    //     <sources>...</sources>
+    //   </account>
+    body  = kXmlDeclBosman;
+    body += "<account><id>"; body += xmlEsc_(acct); body += "</id>";
+    body += "<accountStatus>ENABLED</accountStatus>";
+
+    // UUID -> source-id Map einmalig vorab bauen — wird sowohl von
+    // buildDevicePresets_ (fuer OPAQUE-Slot-source-Verweise) als auch
+    // vom /sources-Block weiter unten benutzt. Reihenfolge: erste
+    // Begegnung pro UUID in matched-Iteration, beginnend bei
+    // kSrcIdStoredMusicBase (=4). Konsistenz zwischen beiden Stellen
+    // ist Pflicht — sonst zeigt der <preset>-source-Verweis ins Leere.
+    std::map<String, int> uuidToSrcId;
+    {
+        int dlnaIdx = kSrcIdStoredMusicBase;
+        std::set<String> seen;
+        for (const auto& sp : matched) {
+            for (const auto& uuid : sp.mediaServerUuids) {
+                if (uuid.length() == 0) continue;
+                if (!seen.insert(uuid).second) continue;
+                uuidToSrcId[uuid] = dlnaIdx++;
+            }
+        }
+    }
 
     body += "<devices>";
     for (const auto& s : matched) {
         String prodCode, prodLabel;
         modelToProduct_(s.model, prodCode, prodLabel);
         body += "<device deviceid=\""; body += xmlEsc_(s.deviceId); body += "\">";
+        // attachedProduct.serialnumber bei Bosman LEER (Speaker hat den
+        // realen serial unten als <serialnumber> nochmal lowercase).
         body += "<attachedProduct product_code=\""; body += xmlEsc_(prodCode); body += "\">";
         body += "<components/>";
         body += "<productlabel>"; body += xmlEsc_(prodLabel); body += "</productlabel>";
-        body += "<serialnumber>"; body += xmlEsc_(s.deviceId); body += "</serialnumber>";
+        body += "<serialnumber></serialnumber>";
         body += "</attachedProduct>";
-        body += "<createdOn>"; body += kFakeTs; body += "</createdOn>";
+        body += "<createdOn>"; body += kBosmanInitTs; body += "</createdOn>";
         body += "<firmwareVersion>"; body += xmlEsc_(s.firmware); body += "</firmwareVersion>";
         body += "<ipaddress>"; body += xmlEsc_(s.ip); body += "</ipaddress>";
         body += "<name>"; body += xmlEsc_(s.name); body += "</name>";
-        body += buildDevicePresets_(s.deviceId);
+        body += buildDevicePresets_(s.deviceId, uuidToSrcId);
         body += "<recents/>";
-        body += "<serialNumber>"; body += xmlEsc_(s.deviceId); body += "</serialNumber>";
-        body += "<updatedOn>"; body += kFakeTs; body += "</updatedOn>";
+        // Bosman: <serialnumber> (lowercase) mit echtem MAC/Serial
+        body += "<serialnumber>"; body += xmlEsc_(s.deviceId); body += "</serialnumber>";
+        body += "<updatedOn>"; body += kBosmanInitTs; body += "</updatedOn>";
         body += "</device>";
     }
     body += "</devices>";
 
     body += "<mode>global</mode>";
-    body += "<preferredLanguage>de</preferredLanguage>";
+    body += "<preferredLanguage>en</preferredLanguage>";
+    // Bosman: providerSettings DIREKT als leeres Element im account
+    body += "<providerSettings/>";
 
-    // Account-Sources. Doppel-TUNEIN: Legacy provider 3 (wie bisher) +
-    // neuer account-bound provider 25 mit nicht-leerer credential.
+    // Sources nach Bosman-Schema: sequenziell durchnummeriert, vollstaendige
+    // Schema-Felder. Speaker zieht via sourceAccount=<username> die Verknuepfung.
     body += "<sources>";
-    body += "<source id=\"10002\" type=\"Audio\">";
-    body +=   "<createdOn>"; body += kFakeTs; body += "</createdOn>";
-    body +=   "<credential type=\"token\"></credential>";
-    body +=   "<name></name>";
-    body +=   "<sourceproviderid>2</sourceproviderid>";
-    body +=   "<sourcename></sourcename>";
-    body +=   "<sourceSettings/>";
-    body +=   "<updatedOn>"; body += kFakeTs; body += "</updatedOn>";
-    body +=   "<username></username>";
-    body += "</source>";
-    body += "<source id=\"10003\" type=\"Audio\">";
-    body +=   "<createdOn>"; body += kFakeTs; body += "</createdOn>";
-    body +=   "<credential type=\"token\">eyJzZXJpYWwiOiJsb2NhbC1pbnRlcm5ldC1yYWRpbyJ9</credential>";
-    body +=   "<name></name>";
-    body +=   "<sourceproviderid>11</sourceproviderid>";
-    body +=   "<sourcename></sourcename>";
-    body +=   "<sourceSettings/>";
-    body +=   "<updatedOn>"; body += kFakeTs; body += "</updatedOn>";
-    body +=   "<username></username>";
-    body += "</source>";
-    body += "<source id=\"10004\" type=\"Audio\">";
-    body +=   "<createdOn>"; body += kFakeTs; body += "</createdOn>";
-    body +=   "<credential type=\"token\"></credential>";
-    body +=   "<name>TUNEIN</name>";
-    body +=   "<sourceproviderid>3</sourceproviderid>";
-    body +=   "<sourcename>TuneIn Radio</sourcename>";
-    body +=   "<sourceSettings/>";
-    body +=   "<updatedOn>"; body += kFakeTs; body += "</updatedOn>";
-    body +=   "<username>TuneIn</username>";
-    body += "</source>";
-    body += "<source id=\""; body += kTuneinAcctSourceId; body += "\" type=\"Audio\">";
-    body +=   "<createdOn>"; body += kFakeTs; body += "</createdOn>";
-    body +=   "<credential type=\"token\">bf32-tunein-token</credential>";
-    body +=   "<name></name>";
-    body +=   "<sourceproviderid>25</sourceproviderid>";
-    body +=   "<sourcename></sourcename>";
-    body +=   "<sourceSettings/>";
-    body +=   "<updatedOn>"; body += kFakeTs; body += "</updatedOn>";
-    // sourceAccount-Mapping (2026-05-20): Speaker zieht den
-    // sourceAccount-String fuer ContentItem.sourceAccount aus dem
-    // <username>-Element der matching <source>-Definition. Wenn das leer
-    // ist, persistiert er Presets mit sourceAccount="" — und beim spaeteren
-    // /select-Druck am Speaker gibt's HTTP 500
-    // (siehe reference_bose_select_sourceaccount). Symptom v0.5.462: nach
-    // account/full-Sync ueberschreibt Speaker seinen Cache mit acct="".
-    body +=   "<username>TuneIn</username>";
-    body += "</source>";
-    // STORED_MUSIC (sourceproviderid=7) — accountless, lokal am Speaker.
-    // Wichtig fuer User mit DLNA/UPnP-Presets (Fritzbox-Mediaserver etc.):
-    // wenn diese Source NICHT im account/full deklariert ist, streicht
-    // der Speaker bestehende STORED_MUSIC-Presets nach Migration zu uns
-    // und zeigt "Quelle nicht vorhanden" beim /select.
-    // Forum-Bericht fred_feuerstein 2026-05-21: ST20 verlor 6 DLNA-Presets
-    // nach Migration zu BoseFix32. Verified-Hypothese: sources-Block-Defizit.
-    body += "<source id=\"10005\" type=\"Audio\">";
-    body +=   "<createdOn>"; body += kFakeTs; body += "</createdOn>";
-    body +=   "<credential type=\"token\"></credential>";
-    body +=   "<name>STORED_MUSIC</name>";
-    body +=   "<sourceproviderid>7</sourceproviderid>";
-    body +=   "<sourcename></sourcename>";
-    body +=   "<sourceSettings/>";
-    body +=   "<updatedOn>"; body += kFakeTs; body += "</updatedOn>";
-    body +=   "<username></username>";
-    body += "</source>";
-    // STORED_MUSIC_MEDIA_RENDERER + UPNP — wir wissen aus dem speaker-side
-    // /sources-Endpoint dass diese beiden im "natuerlichen" Bose-State als
-    // UNAVAILABLE drinstehen. Symmetrie wahren: wir deklarieren sie hier
-    // damit der Speaker sie nicht als "abgekuendigt" wahrnimmt.
-    body += "<source id=\"10006\" type=\"Audio\">";
-    body +=   "<createdOn>"; body += kFakeTs; body += "</createdOn>";
-    body +=   "<credential type=\"token\"></credential>";
-    body +=   "<name>STORED_MUSIC_MEDIA_RENDERER</name>";
-    body +=   "<sourceproviderid>7</sourceproviderid>";
-    body +=   "<sourcename></sourcename>";
-    body +=   "<sourceSettings/>";
-    body +=   "<updatedOn>"; body += kFakeTs; body += "</updatedOn>";
-    body +=   "<username></username>";
-    body += "</source>";
-    body += "</sources>";
 
+    // id=1: TUNEIN (sourceproviderid=25, "TuneIn")
+    body += "<source id=\""; body += kSrcIdTuneIn; body += "\" type=\"Audio\">";
+    body +=   "<createdOn>"; body += kFakeTs; body += "</createdOn>";
+    body +=   "<credential type=\"token\"></credential>";
+    body +=   "<name>TuneIn</name>";
+    body +=   "<sourceproviderid>25</sourceproviderid>";
+    body +=   "<sourcename>TUNEIN</sourcename>";
+    body +=   "<sourceSettings/>";
+    body +=   "<updatedOn>"; body += kFakeTs; body += "</updatedOn>";
+    body +=   "<username></username>";
+    body += "</source>";
+
+    // id=2: RADIO_BROWSER (sourceproviderid=39)
+    body += "<source id=\""; body += kSrcIdRadioBrowser; body += "\" type=\"Audio\">";
+    body +=   "<createdOn>"; body += kFakeTs; body += "</createdOn>";
+    body +=   "<credential type=\"token\"></credential>";
+    body +=   "<name>RadioBrowser</name>";
+    body +=   "<sourceproviderid>39</sourceproviderid>";
+    body +=   "<sourcename>RADIO_BROWSER</sourcename>";
+    body +=   "<sourceSettings/>";
+    body +=   "<updatedOn>"; body += kFakeTs; body += "</updatedOn>";
+    body +=   "<username></username>";
+    body += "</source>";
+
+    // id=3: LOCAL_INTERNET_RADIO (sourceproviderid=11)
+    body += "<source id=\""; body += kSrcIdLocalIntRadio; body += "\" type=\"Audio\">";
+    body +=   "<createdOn>"; body += kFakeTs; body += "</createdOn>";
+    body +=   "<credential type=\"token\"></credential>";
+    body +=   "<name>Local Internet Radio</name>";
+    body +=   "<sourceproviderid>11</sourceproviderid>";
+    body +=   "<sourcename>LOCAL_INTERNET_RADIO</sourcename>";
+    body +=   "<sourceSettings/>";
+    body +=   "<updatedOn>"; body += kFakeTs; body += "</updatedOn>";
+    body +=   "<username></username>";
+    body += "</source>";
+
+    // id=4..N: STORED_MUSIC pro DLNA-UUID (sourceproviderid=7).
+    // Bosman-Schema: <username>UUID/0</username> + <name>display</name>.
+    // Wir nutzen die uuidToSrcId-Map die OBEN gebaut wurde — selbe Map
+    // referenzieren die <preset>-source-id-Verweise. Ohne diese Konsistenz
+    // sind <preset>-Slots auf nicht-existente source-IDs verlinkt.
+    // Emission-Order: erst nach src-id sortieren (statt Map-Key) damit die
+    // ID-Reihenfolge im XML monoton aufsteigt — kleinere Anomalie fuer
+    // Bose-Parser-Logik.
+    std::vector<std::pair<int, String>> srcIdToUuid;  // (srcId, uuid)
+    srcIdToUuid.reserve(uuidToSrcId.size());
+    for (const auto& kv : uuidToSrcId) srcIdToUuid.push_back({kv.second, kv.first});
+    std::sort(srcIdToUuid.begin(), srcIdToUuid.end());
+    for (const auto& pr : srcIdToUuid) {
+        const int srcId = pr.first;
+        const String& uuid = pr.second;
+        body += "<source id=\""; body += String(srcId); body += "\" type=\"Audio\">";
+        body +=   "<createdOn>"; body += kFakeTs; body += "</createdOn>";
+        body +=   "<credential type=\"token\"></credential>";
+        body +=   "<name>"; body += xmlEsc_(uuid); body += "</name>";
+        body +=   "<sourceproviderid>7</sourceproviderid>";
+        body +=   "<sourcename>STORED_MUSIC</sourcename>";
+        body +=   "<sourceSettings/>";
+        body +=   "<updatedOn>"; body += kFakeTs; body += "</updatedOn>";
+        body +=   "<username>"; body += xmlEsc_(uuid); body += "/0</username>";
+        body += "</source>";
+    }
+
+    body += "</sources>";
     body += "</account>";
-    req->send(200, "application/vnd.bose.streaming-v1.2+xml", body);
+
+    // Bosman-Response-Header: Method_name + Etag (content-derived hash).
+    AsyncWebServerResponse* resp = req->beginResponse(
+        200, "application/vnd.bose.streaming-v1.2+xml", body);
+    resp->addHeader("Method_name", "getFullAccount");
+    resp->addHeader("Etag", etagFor_(String("full:") + acct));
+    req->send(resp);
 }
 
 void handleAccountSources(AsyncWebServerRequest* req) {
-    // Konsistent mit handleAccountFull: doppelte TUNEIN-Liste (legacy
-    // provider 3 + account-bound provider 25 mit credential).
-    String body = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
-                  "<sources>"
-                  "<source id=\"10002\"><name>INTERNET_RADIO</name><sourceproviderid>2</sourceproviderid></source>"
-                  "<source id=\"10003\"><name>LOCAL_INTERNET_RADIO</name><sourceproviderid>11</sourceproviderid></source>"
-                  "<source id=\"10004\"><name>TUNEIN</name><sourceproviderid>3</sourceproviderid></source>"
-                  "<source id=\"";
-    body += kTuneinAcctSourceId;
-    body += "\" type=\"Audio\"><sourceproviderid>25</sourceproviderid><credential type=\"token\">bf32-tunein-token</credential></source>"
-            "<source id=\"10005\"><name>STORED_MUSIC</name><sourceproviderid>7</sourceproviderid></source>"
-            "<source id=\"10006\"><name>STORED_MUSIC_MEDIA_RENDERER</name><sourceproviderid>7</sourceproviderid></source>"
-            "</sources>";
-    req->send(200, "application/vnd.bose.streaming-v1.2+xml", body);
+    // Bosman-Schema: gleiche source-Bloecke wie in account/full, sequenziell.
+    // Bosman liefert bei /sources tatsaechlich dieselbe Liste wie unter
+    // account/full <sources>, gleiches XML-Decl + Etag-Konsistenz.
+    String body;
+    body.reserve(2048);
+    body  = kXmlDeclBosman;
+    body += "<sources>";
+
+    // id=1: TUNEIN
+    body += "<source id=\""; body += kSrcIdTuneIn; body += "\" type=\"Audio\">";
+    body +=   "<createdOn>"; body += kFakeTs; body += "</createdOn>";
+    body +=   "<credential type=\"token\"></credential>";
+    body +=   "<name>TuneIn</name>";
+    body +=   "<sourceproviderid>25</sourceproviderid>";
+    body +=   "<sourcename>TUNEIN</sourcename>";
+    body +=   "<sourceSettings/>";
+    body +=   "<updatedOn>"; body += kFakeTs; body += "</updatedOn>";
+    body +=   "<username></username>";
+    body += "</source>";
+
+    // id=2: RADIO_BROWSER
+    body += "<source id=\""; body += kSrcIdRadioBrowser; body += "\" type=\"Audio\">";
+    body +=   "<createdOn>"; body += kFakeTs; body += "</createdOn>";
+    body +=   "<credential type=\"token\"></credential>";
+    body +=   "<name>RadioBrowser</name>";
+    body +=   "<sourceproviderid>39</sourceproviderid>";
+    body +=   "<sourcename>RADIO_BROWSER</sourcename>";
+    body +=   "<sourceSettings/>";
+    body +=   "<updatedOn>"; body += kFakeTs; body += "</updatedOn>";
+    body +=   "<username></username>";
+    body += "</source>";
+
+    // id=3: LOCAL_INTERNET_RADIO
+    body += "<source id=\""; body += kSrcIdLocalIntRadio; body += "\" type=\"Audio\">";
+    body +=   "<createdOn>"; body += kFakeTs; body += "</createdOn>";
+    body +=   "<credential type=\"token\"></credential>";
+    body +=   "<name>Local Internet Radio</name>";
+    body +=   "<sourceproviderid>11</sourceproviderid>";
+    body +=   "<sourcename>LOCAL_INTERNET_RADIO</sourcename>";
+    body +=   "<sourceSettings/>";
+    body +=   "<updatedOn>"; body += kFakeTs; body += "</updatedOn>";
+    body +=   "<username></username>";
+    body += "</source>";
+
+    // id=4..N: STORED_MUSIC pro UUID
+    int dlnaIdx = kSrcIdStoredMusicBase;
+    std::set<String> emittedUuids;
+    auto allSpeakers = sixback::SpeakerInventory::instance().list();
+    for (const auto& s : allSpeakers) {
+        for (const auto& uuid : s.mediaServerUuids) {
+            if (uuid.length() == 0) continue;
+            if (!emittedUuids.insert(uuid).second) continue;
+            body += "<source id=\""; body += String(dlnaIdx++); body += "\" type=\"Audio\">";
+            body +=   "<createdOn>"; body += kFakeTs; body += "</createdOn>";
+            body +=   "<credential type=\"token\"></credential>";
+            body +=   "<name>"; body += xmlEsc_(uuid); body += "</name>";
+            body +=   "<sourceproviderid>7</sourceproviderid>";
+            body +=   "<sourcename>STORED_MUSIC</sourcename>";
+            body +=   "<sourceSettings/>";
+            body +=   "<updatedOn>"; body += kFakeTs; body += "</updatedOn>";
+            body +=   "<username>"; body += xmlEsc_(uuid); body += "/0</username>";
+            body += "</source>";
+        }
+    }
+
+    body += "</sources>";
+
+    AsyncWebServerResponse* resp = req->beginResponse(
+        200, "application/vnd.bose.streaming-v1.2+xml", body);
+    resp->addHeader("Method_name", "getSources");
+    resp->addHeader("Etag", etagFor_(String("sources")));
+    req->send(resp);
 }
 
 // -----------------------------------------------------------------------------
@@ -428,34 +629,59 @@ void handleAccountSources(AsyncWebServerRequest* req) {
 //   sich mit den sourceproviderids in handleAccountSources.
 // -----------------------------------------------------------------------------
 void handleSourceProviders(AsyncWebServerRequest* req) {
-    // Ueberboese-Referenz fuehrt TUNEIN unter sourceproviderid=25, nicht 3.
-    // Wir liefern beide IDs als TUNEIN aus — Speaker akzeptiert dann eine
-    // davon abhaengig davon was er persistent gespeichert hat.
-    static const char* body =
-        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
-        "<sourceProviders>"
-        "<sourceprovider id=\"2\">"
-            "<createdOn>2012-01-01T00:00:00.000+00:00</createdOn>"
-            "<name>INTERNET_RADIO</name>"
-            "<updatedOn>2012-01-01T00:00:00.000+00:00</updatedOn>"
-        "</sourceprovider>"
-        "<sourceprovider id=\"3\">"
-            "<createdOn>2012-01-01T00:00:00.000+00:00</createdOn>"
-            "<name>TUNEIN</name>"
-            "<updatedOn>2012-01-01T00:00:00.000+00:00</updatedOn>"
-        "</sourceprovider>"
-        "<sourceprovider id=\"11\">"
-            "<createdOn>2012-01-01T00:00:00.000+00:00</createdOn>"
-            "<name>LOCAL_INTERNET_RADIO</name>"
-            "<updatedOn>2012-01-01T00:00:00.000+00:00</updatedOn>"
-        "</sourceprovider>"
-        "<sourceprovider id=\"25\">"
-            "<createdOn>2012-01-01T00:00:00.000+00:00</createdOn>"
-            "<name>TUNEIN</name>"
-            "<updatedOn>2012-01-01T00:00:00.000+00:00</updatedOn>"
-        "</sourceprovider>"
-        "</sourceProviders>";
-    req->send(200, "application/vnd.bose.streaming-v1.2+xml", body);
+    // Bosman-Schema (proxy-capture-verified 2026-05-21): volle Liste von ALLEN
+    // Bose-cloud-bekannten Providern, mit id+name+createdOn+updatedOn.
+    // Speaker referenziert sourceproviderid aus diesem Katalog. Unsere
+    // sources-Liste benutzt nur: 7 STORED_MUSIC, 11 LOCAL_INTERNET_RADIO,
+    // 25 TUNEIN, 39 RADIO_BROWSER — aber wir liefern Bosman-volle Liste
+    // damit Speaker keinen "uebliche-IDs-fehlen"-Pfad triggert.
+    static constexpr const char* kTs = "2012-09-19T12:43:00.000+00:00";
+    String body;
+    body.reserve(4096);
+    body  = kXmlDeclBosman;
+    body += "<sourceProviders>";
+    struct Sp { const char* id; const char* name; };
+    static const Sp kProviders[] = {
+        {"1",  "PANDORA"},
+        {"2",  "INTERNET_RADIO"},
+        {"3",  "OFF"},
+        {"4",  "LOCAL"},
+        {"5",  "AIRPLAY"},
+        {"6",  "CURRATED_RADIO"},
+        {"7",  "STORED_MUSIC"},
+        {"8",  "SLAVE_SOURCE"},
+        {"9",  "AUX"},
+        {"10", "RECOMMENDED_INTERNET_RADIO"},
+        {"11", "LOCAL_INTERNET_RADIO"},
+        {"12", "GLOBAL_INTERNET_RADIO"},
+        {"13", "HELLO"},
+        {"14", "DEEZER"},
+        {"15", "SPOTIFY"},
+        {"16", "IHEART"},
+        {"17", "SIRIUSXM"},
+        {"18", "GOOGLE_PLAY_MUSIC"},
+        {"19", "QQMUSIC"},
+        {"20", "AMAZON"},
+        {"21", "LOCAL_MUSIC"},
+        {"22", "WBMX"},
+        {"23", "SOUNDCLOUD"},
+        {"24", "TIDAL"},
+        {"25", "TUNEIN"},
+        {"39", "RADIO_BROWSER"},
+    };
+    for (const auto& p : kProviders) {
+        body += "<sourceprovider id=\""; body += p.id; body += "\">";
+        body +=   "<createdOn>"; body += kTs; body += "</createdOn>";
+        body +=   "<name>"; body += p.name; body += "</name>";
+        body +=   "<updatedOn>"; body += kTs; body += "</updatedOn>";
+        body += "</sourceprovider>";
+    }
+    body += "</sourceProviders>";
+
+    AsyncWebServerResponse* resp = req->beginResponse(
+        200, "application/vnd.bose.streaming-v1.2+xml", body);
+    resp->addHeader("Etag", etagFor_("sourceProviders"));
+    req->send(resp);
 }
 
 // -----------------------------------------------------------------------------
@@ -467,8 +693,8 @@ void handleSourceProviders(AsyncWebServerRequest* req) {
 void handleBoseRoot(AsyncWebServerRequest* req) {
     static const char* body =
         "<!doctype html><html><head><meta charset=\"utf-8\">"
-        "<title>BoseFix32 Cloud-Mock</title></head><body>"
-        "<h1>BoseFix32 Cloud-Mock</h1>"
+        "<title>SixBack Cloud-Mock</title></head><body>"
+        "<h1>SixBack Cloud-Mock</h1>"
         "<p>Bose-SoundTouch-Cloud-Replacement, lokal auf ESP32.</p>"
         "<p>Verwaltung: <a href=\"/\">Port 80</a></p>"
         "</body></html>";
@@ -497,11 +723,17 @@ void handleBmxIconStub(AsyncWebServerRequest* req) {
 }
 
 void handleProviderSettings(AsyncWebServerRequest* req) {
-    req->send(200, "application/json",
-              "{\"providers\":["
-                "{\"id\":3,\"name\":\"TUNEIN\",\"enabled\":true},"
-                "{\"id\":11,\"name\":\"LOCAL_INTERNET_RADIO\",\"enabled\":true}"
-              "]}");
+    // Bosman-Schema (proxy-capture-verified 2026-05-21):
+    //   Content-Type: application/vnd.bose.streaming-v1.2+xml
+    //   Body: <?xml version="1.0" standalone="yes"?><providerSettings/>
+    //   Headers: Method_name: getProviderSettings, Etag: <stable-hash>
+    String body = kXmlDeclBosman;
+    body += "<providerSettings/>";
+    AsyncWebServerResponse* resp = req->beginResponse(
+        200, "application/vnd.bose.streaming-v1.2+xml", body);
+    resp->addHeader("Method_name", "getProviderSettings");
+    resp->addHeader("Etag", etagFor_("providerSettings"));
+    req->send(resp);
 }
 
 // -----------------------------------------------------------------------------
@@ -512,10 +744,10 @@ void handleAccountPresets(AsyncWebServerRequest* req) {
     // Gleiche Schutzlogik wie handleDevicePresets: wenn kein bekannter Speaker
     // Presets im Store hat, 404 statt <presets/>, damit der Speaker seinen
     // Local-Cache nicht ueberschreibt.
-    auto speakers = bosefix::SpeakerInventory::instance().list();
-    bosefix::Speaker* withPresets = nullptr;
+    auto speakers = sixback::SpeakerInventory::instance().list();
+    sixback::Speaker* withPresets = nullptr;
     for (auto& s : speakers) {
-        if (bosefix::PresetStore::instance().hasAnyFor(s.deviceId)) {
+        if (sixback::PresetStore::instance().hasAnyFor(s.deviceId)) {
             withPresets = &s; break;
         }
     }
@@ -524,7 +756,7 @@ void handleAccountPresets(AsyncWebServerRequest* req) {
         req->send(404, "application/vnd.bose.streaming-v1.2+xml", "");
         return;
     }
-    String body = bosefix::PresetStore::instance().toBoseXml(withPresets->deviceId);
+    String body = sixback::PresetStore::instance().toBoseXml(withPresets->deviceId);
     req->send(200, "application/vnd.bose.streaming-v1.2+xml", body);
 }
 
@@ -537,13 +769,13 @@ void handleDevicePresets(AsyncWebServerRequest* req) {
     // <presets/>. Der Speaker behaelt damit seinen Local-Cache. WICHTIG:
     // dieser Endpoint ist die Schluessel-Sicherung gegen den Phase-2-Loss
     // den wir am 2026-05-19 beobachtet haben.
-    if (!bosefix::PresetStore::instance().hasAnyFor(devId)) {
+    if (!sixback::PresetStore::instance().hasAnyFor(devId)) {
         Serial.printf("[bmx][safe] /presets %s -> 404 (store empty, Speaker behaelt Cache)\n",
                       devId.c_str());
         req->send(404, "application/vnd.bose.streaming-v1.2+xml", "");
         return;
     }
-    String body  = bosefix::PresetStore::instance().toBoseXml(devId);
+    String body  = sixback::PresetStore::instance().toBoseXml(devId);
     req->send(200, "application/vnd.bose.streaming-v1.2+xml", body);
 }
 
@@ -614,7 +846,7 @@ void handleCustomerSupport(AsyncWebServerRequest* req) {
 }
 
 // GET /streaming/account/{a}/device/{d}/recents
-//   Liste der zuletzt gespielten Inhalte. BoseFix32 fuehrt keine Recent-Liste
+//   Liste der zuletzt gespielten Inhalte. SixBack fuehrt keine Recent-Liste
 //   (Speaker macht das selber). Empty <recents/>.
 void handleAccountRecents(AsyncWebServerRequest* req) {
     req->send(200, "application/vnd.bose.streaming-v1.2+xml",
@@ -630,7 +862,7 @@ void handleAccountRecentSingle(AsyncWebServerRequest* req) {
 }
 
 // GET /streaming/account/{a}/device/{d}/preset/{n}
-//   Single-Preset-Pull. BoseFix32 liefert Presets ueber /streaming/account/
+//   Single-Preset-Pull. SixBack liefert Presets ueber /streaming/account/
 //   {a}/device/{d}/presets als Liste; per-Slot ist redundant. 404.
 void handleAccountPresetSingle(AsyncWebServerRequest* req) {
     req->send(404, "application/vnd.bose.streaming-v1.2+xml",
@@ -676,13 +908,13 @@ void groupsSave_() {
             ro["role"] = r.role;
         }
     }
-    bosefix::nvsSaveJson("bfx_groups", "list", doc);
+    sixback::nvsSaveJson("bfx_groups", "list", doc);
 }
 
 void groupsInit_() {
     if (!g_groups_mtx) g_groups_mtx = xSemaphoreCreateMutex();
     JsonDocument doc;
-    if (!bosefix::nvsLoadJson("bfx_groups", "list", doc)) return;
+    if (!sixback::nvsLoadJson("bfx_groups", "list", doc)) return;
     if (doc["next_id"].is<uint32_t>()) g_next_group_id = doc["next_id"];
     JsonArrayConst arr = doc["groups"].as<JsonArrayConst>();
     for (JsonVariantConst v : arr) {
@@ -792,11 +1024,16 @@ void handleDeviceGroup(AsyncWebServerRequest* req) {
         xSemaphoreGive(g_groups_mtx);
     }
     if (resp.length() == 0) {
-        resp = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><group/>";
+        // Bosman: <?xml version="1.0" encoding="UTF-8"?><group/>
+        resp = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><group/>";
     }
     Serial.printf("[group] GET device=%s -> %s\n",
                   did.c_str(), resp.indexOf("id=") > 0 ? "group" : "empty");
-    req->send(200, "application/vnd.bose.streaming-v1.2+xml", resp);
+    AsyncWebServerResponse* r = req->beginResponse(
+        200, "application/vnd.bose.streaming-v1.2+xml", resp);
+    r->addHeader("Method_name", "getGroup");
+    r->addHeader("Etag", etagFor_(String("group:") + did));
+    req->send(r);
 }
 
 // POST /streaming/account/{a}/group/  -> 201 Created
@@ -930,6 +1167,95 @@ void handleDeviceAddBody(AsyncWebServerRequest* req,
     }
 }
 
+// -----------------------------------------------------------------------------
+// POST /streaming/account/{aid}/source  --  Speaker registriert einen
+// "MusicService Account" (DLNA-MediaServer, Spotify-User-Account, etc.).
+// Empirisch entdeckt 2026-05-21 via Capture: Speaker schickt nach
+// `BMX-POST /setMusicServiceAccount` (von SoundTouchPlus/Bosman) einen
+// Cloud-Roundtrip mit Bearer-Token + diesem Body:
+//   <source><credential></credential><username>UUID/0</username>
+//   <sourceproviderid>INVALID_SOURCE</sourceproviderid>
+//   <sourcename>display-name</sourcename></source>
+// Cloud muss 200 OK mit <source>-XML zurueck (id + sourceproviderid auf 7
+// fuer STORED_MUSIC). Danach setzt der Speaker intern <sourceItem
+// sourceAccount="UUID/0" status="READY"> — und /select klappt.
+struct AddSourceCtx { String accountId; String body; };
+std::map<void*, AddSourceCtx> g_addSrcCtx;
+SemaphoreHandle_t g_addSrcMtx = nullptr;
+
+void handleAccountSourceAddBody(AsyncWebServerRequest* req,
+                                 uint8_t* data, size_t len, size_t index, size_t total) {
+    if (!g_addSrcMtx) g_addSrcMtx = xSemaphoreCreateMutex();
+    if (xSemaphoreTake(g_addSrcMtx, pdMS_TO_TICKS(50)) != pdTRUE) return;
+    auto& ctx = g_addSrcCtx[req];
+    if (index == 0) {
+        ctx.accountId = req->pathArg(0);
+        ctx.body = "";
+    }
+    for (size_t i = 0; i < len; ++i) ctx.body += (char)data[i];
+    xSemaphoreGive(g_addSrcMtx);
+}
+
+void handleAccountSourceAddFinalize(AsyncWebServerRequest* req) {
+    String acct, body;
+    if (g_addSrcMtx && xSemaphoreTake(g_addSrcMtx, pdMS_TO_TICKS(50)) == pdTRUE) {
+        auto it = g_addSrcCtx.find(req);
+        if (it != g_addSrcCtx.end()) {
+            acct = it->second.accountId;
+            body = it->second.body;
+            g_addSrcCtx.erase(it);
+        }
+        xSemaphoreGive(g_addSrcMtx);
+    }
+    // Body parsen: <username>UUID/0</username>, <sourcename>X</sourcename>
+    String userAcc, srcName;
+    int p1 = body.indexOf("<username>");
+    if (p1 >= 0) {
+        int e = body.indexOf("</username>", p1);
+        if (e > p1) userAcc = body.substring(p1 + 10, e);
+    }
+    int p2 = body.indexOf("<sourcename>");
+    if (p2 >= 0) {
+        int e = body.indexOf("</sourcename>", p2);
+        if (e > p2) srcName = body.substring(p2 + 12, e);
+    }
+    // Eindeutige Source-ID aus UUID-Hash (deterministisch ueber reboots).
+    uint32_t srcId = 25000000;
+    for (size_t i = 0; i < userAcc.length(); ++i) srcId = srcId * 31 + (uint8_t)userAcc[i];
+    srcId = 25000000 + (srcId % 1000000);
+    // soundcork main.py configured_source_xml (Zeile 218-241):
+    //   <sourcename> = display_name aus Request (z.B. "genai: minidlna"),
+    //   NICHT hardcoded "Mediaserver". <name> = source_key_account (= username
+    //   = UUID/0). sourceproviderid wird aus PROVIDERS-index berechnet — fuer
+    //   STORED_MUSIC ist das 7.
+    String resp = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
+                  "<source id=\""; resp += String(srcId); resp += "\" type=\"Audio\">"
+                    "<createdOn>"; resp += kFakeTs; resp += "</createdOn>"
+                    "<credential type=\"token\"></credential>"
+                    "<name>"; resp += xmlEsc_(userAcc); resp += "</name>"
+                    "<sourceproviderid>7</sourceproviderid>"
+                    "<sourcename>"; resp += xmlEsc_(srcName); resp += "</sourcename>"
+                    "<sourceSettings/>"
+                    "<updatedOn>"; resp += kFakeTs; resp += "</updatedOn>"
+                    "<username>"; resp += xmlEsc_(userAcc); resp += "</username>"
+                  "</source>";
+    // Ground-truth aus deborahgu/soundcork main.py:630 — `post_account_source`:
+    //   status_code=HTTPStatus.CREATED  (= 201)
+    //   extra_headers={"method_name": "addSource"}
+    //   ETag-Header (etag_for_account, weak=False) — soundcork-Endpoint
+    //   serializiert den account-state-checksum hier; ohne den verwirft
+    //   Bose_Lisa die Antwort vermutlich als "stale".
+    AsyncWebServerResponse* r = req->beginResponse(
+        201, "application/vnd.bose.streaming-v1.2+xml", resp);
+    r->addHeader("METHOD_NAME", "addSource");
+    // ETag = deterministisch aus account + src-id (analog soundcork mtime-basiert).
+    String etag = "\""; etag += acct; etag += "-"; etag += String(srcId); etag += "\"";
+    r->addHeader("ETag", etag);
+    req->send(r);
+    Serial.printf("[marge] addAccountSource acct=%s user=%s name=%s -> 200 id=%u\n",
+                  acct.c_str(), userAcc.c_str(), srcName.c_str(), (unsigned)srcId);
+}
+
 void handleDeviceAddFinalize(AsyncWebServerRequest* req) {
     String acct = req->pathArg(0);
     String devId;
@@ -1030,7 +1356,7 @@ void handleNotFound(AsyncWebServerRequest* req) {
 
     pushUnknown(r);
 
-    req->send(404, "text/plain", "BoseFix32: endpoint not implemented");
+    req->send(404, "text/plain", "SixBack: endpoint not implemented");
 }
 
 } // anon
@@ -1112,6 +1438,11 @@ void registerBoseEndpoints(AsyncWebServer& server) {
     // Marge-Association-Bootstrap (trailing slash ist Pflicht — Speaker schickt es so):
     server.on("^/streaming/account/([^/]+)/device/$",                 HTTP_POST,
               handleDeviceAddFinalize, nullptr, handleDeviceAddBody);
+    // POST /streaming/account/<aid>/source — MusicService-Account-Registrierung
+    // (DLNA, Spotify-User, etc.). Speaker triggert dies aus BMX-POST
+    // /setMusicServiceAccount und erwartet 200 OK mit <source id=...>-XML.
+    server.on("^/streaming/account/([^/]+)/source$",                  HTTP_POST,
+              handleAccountSourceAddFinalize, nullptr, handleAccountSourceAddBody);
     server.on("/updates/soundtouch",                                  HTTP_GET,  handleSWUpdateIndex);
 
     server.onNotFound(handleNotFound);

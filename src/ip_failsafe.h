@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// BoseFix32 — IP-Change-Failsafe
+// SixBack — IP-Change-Failsafe
 //
 // Hintergrund: Bose-Speaker speichern margeServerUrl/statsServerUrl/etc.
 // als feste IP-Adressen (kein mDNS-Resolve im Speaker-Stack). Wenn der
@@ -20,7 +20,7 @@
 
 #include <Arduino.h>
 
-namespace bosefix {
+namespace sixback {
 
 // Beim Boot rufen (nach Connect-WiFi, nach Inventory-Load).
 // Loggt + ggf. re-migriert alle bekannten Speaker.
@@ -29,6 +29,6 @@ void ipFailsafeCheck();
 // Liefert die zuletzt persistierte ESP-IP (oder "" wenn noch nie gespeichert).
 String getLastKnownIp();
 
-} // namespace bosefix
+} // namespace sixback
 
 #endif

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// BoseFix32 — Verwaltungs-REST-API (Port 80)
+// SixBack — Verwaltungs-REST-API (Port 80)
 //
 // Vollstaendige Speaker-/Preset-/Gruppen-Verwaltung. Frontend (Web-UI)
 // nutzt diese Endpoints und bekommt damit alle Funktionalitaet:
@@ -121,10 +121,10 @@ void handleStatus(AsyncWebServerRequest* req) {
     wifi["rssi"]      = WiFi.RSSI();
     wifi["mac"]       = WiFi.macAddress();
     wifi["hostname"]  = String(MDNS_HOSTNAME) + ".local";
-    wifi["improv_active"]   = bosefix::improvIsActive();
-    wifi["improv_window_s"] = bosefix::improvWindowRemainingS();
-    wifi["captive_active"]   = bosefix::captiveIsActive();
-    wifi["captive_window_s"] = bosefix::captiveWindowRemainingS();
+    wifi["improv_active"]   = sixback::improvIsActive();
+    wifi["improv_window_s"] = sixback::improvWindowRemainingS();
+    wifi["captive_active"]   = sixback::captiveIsActive();
+    wifi["captive_window_s"] = sixback::captiveWindowRemainingS();
 
     JsonObject heap   = doc["heap"].to<JsonObject>();
     heap["free"]      = ESP.getFreeHeap();
@@ -144,12 +144,12 @@ void handleStatus(AsyncWebServerRequest* req) {
     JsonObject cloud  = doc["cloud_replacement"].to<JsonObject>();
     cloud["port"]     = BOSE_HTTP_PORT;
     cloud["base_url"] = myBaseUrl();
-    doc["speakers_count"]    = bosefix::SpeakerInventory::instance().list().size();
-    doc["scan_in_progress"]  = bosefix::SpeakerInventory::instance().isScanRunning();
+    doc["speakers_count"]    = sixback::SpeakerInventory::instance().list().size();
+    doc["scan_in_progress"]  = sixback::SpeakerInventory::instance().isScanRunning();
 
     // Health-Snapshot: boot/crash-counter, last reset reason, watchdog state
     JsonObject health = doc["health"].to<JsonObject>();
-    bosefix::healthToJson(health);
+    sixback::healthToJson(health);
 
     String body; serializeJson(doc, body);
     req->send(200, "application/json", body);
@@ -160,8 +160,8 @@ void handleStatus(AsyncWebServerRequest* req) {
 // -----------------------------------------------------------------------------
 void emitSpeakers(AsyncWebServerRequest* req, JsonDocument& doc) {
     JsonArray arr = doc["speakers"].to<JsonArray>();
-    auto& inv = bosefix::SpeakerInventory::instance();
-    auto& ps  = bosefix::PresetStore::instance();
+    auto& inv = sixback::SpeakerInventory::instance();
+    auto& ps  = sixback::PresetStore::instance();
     for (auto& s : inv.list()) {
         JsonObject o = arr.add<JsonObject>();
         o["device_id"] = s.deviceId;
@@ -170,14 +170,14 @@ void emitSpeakers(AsyncWebServerRequest* req, JsonDocument& doc) {
         o["firmware"]  = s.firmware;
         o["ip"]        = s.ip;
         o["account_id"]= s.accountId;
-        o["status"]      = bosefix::migrationStatusToStr(s.status);
+        o["status"]      = sixback::migrationStatusToStr(s.status);
         o["cloud_url"]   = s.cloudUrl;
         o["owned_by_us"] = s.ownedByUs;
         o["group_id"]    = s.groupId;
         // Anzahl belegter Preset-Slots
         int n = 0;
         for (auto& p : ps.getForSpeaker(s.deviceId)) {
-            if (p.source != bosefix::PresetSource::EMPTY) ++n;
+            if (p.source != sixback::PresetSource::EMPTY) ++n;
         }
         o["preset_count"] = n;
     }
@@ -192,7 +192,7 @@ void handleSpeakersList(AsyncWebServerRequest* req) {
 }
 
 void discoverWorker_(void* /*arg*/) {
-    bosefix::SpeakerInventory::instance().discover();
+    sixback::SpeakerInventory::instance().discover();
     vTaskDelete(nullptr);
 }
 
@@ -203,7 +203,7 @@ void handleDiscover(AsyncWebServerRequest* req) {
     // isiert dem UI dass es weiter pollen soll. Wenn discover() bereits laeuft,
     // gibt's keinen weiteren Worker (compare_exchange in discover()) — wir
     // returnen einfach den aktuellen Stand.
-    auto& inv = bosefix::SpeakerInventory::instance();
+    auto& inv = sixback::SpeakerInventory::instance();
     if (!inv.isScanRunning()) {
         BaseType_t r = xTaskCreate(discoverWorker_, "bg-discover", 4096,
                                     nullptr, tskIDLE_PRIORITY + 1, nullptr);
@@ -219,36 +219,36 @@ void handleDiscover(AsyncWebServerRequest* req) {
 void handleSpeakerAdd(AsyncWebServerRequest* req, JsonDocument& body) {
     String ip = (const char*)(body["ip"] | "");
     if (ip.length() == 0) { req->send(400, "application/json", "{\"error\":\"ip required\"}"); return; }
-    bosefix::ProbeFailure fail;
-    bool ok = bosefix::SpeakerInventory::instance().addByIp(ip, &fail);
+    sixback::ProbeFailure fail;
+    bool ok = sixback::SpeakerInventory::instance().addByIp(ip, &fail);
     if (ok) {
         req->send(200, "application/json", "{\"ok\":true}");
         return;
     }
     // Strukturierter Fehler — UI kann reason+detail darstellen statt nur "failed"
     String out = "{\"ok\":false,\"error\":\"probe_failed\",\"reason\":\"";
-    out += bosefix::probeFailReasonStr(fail.reason);
+    out += sixback::probeFailReasonStr(fail.reason);
     out += "\",\"detail\":\"";
     String d = fail.detail; d.replace("\"", "'"); d.replace("\n", " ");
     out += d;
     out += "\",\"hint\":\"";
     switch (fail.reason) {
-        case bosefix::ProbeFailReason::CONNECT_FAILED:
+        case sixback::ProbeFailReason::CONNECT_FAILED:
             out += "Speaker antwortet nicht auf Port 8090. Pruefe ob die IP "
                    "korrekt ist und der Speaker eingeschaltet ist. Wenn ein "
                    "SoundTouch Portable im Standby ist, weckt ihn ein "
                    "kurzer Button-Druck.";
             break;
-        case bosefix::ProbeFailReason::HTTP_NOT_200:
+        case sixback::ProbeFailReason::HTTP_NOT_200:
             out += "Port 8090 antwortet, liefert aber nicht HTTP 200. Ist die IP "
                    "wirklich ein SoundTouch, oder etwas anderes?";
             break;
-        case bosefix::ProbeFailReason::WRONG_BODY:
-        case bosefix::ProbeFailReason::EMPTY_BODY:
+        case sixback::ProbeFailReason::WRONG_BODY:
+        case sixback::ProbeFailReason::EMPTY_BODY:
             out += "Antwort kein Bose-/info-XML. Pruefe: curl http://" + ip +
                    ":8090/info — was kommt zurueck?";
             break;
-        case bosefix::ProbeFailReason::NO_DEVICE_ID:
+        case sixback::ProbeFailReason::NO_DEVICE_ID:
             out += "<info>-Tag vorhanden, aber kein deviceID-Attribut. Sehr "
                    "ungewoehnlich — bitte XML-Body vom curl-Test mitschicken.";
             break;
@@ -261,7 +261,7 @@ void handleSpeakerAdd(AsyncWebServerRequest* req, JsonDocument& body) {
 
 void handleSpeakerDelete(AsyncWebServerRequest* req) {
     String id = req->pathArg(0);
-    bool ok = bosefix::SpeakerInventory::instance().remove(id);
+    bool ok = sixback::SpeakerInventory::instance().remove(id);
     req->send(ok ? 200 : 404, "application/json", ok ? "{\"ok\":true}" : "{\"error\":\"not found\"}");
 }
 
@@ -292,16 +292,16 @@ int importPresetsFromSpeaker_(const String& id, int& countOk, int& countAban,
 
 void migrateRevertWorker_(void* arg) {
     auto* job = static_cast<MigrateJob_*>(arg);
-    auto& inv = bosefix::SpeakerInventory::instance();
+    auto& inv = sixback::SpeakerInventory::instance();
     if (job->doMigrate) {
         auto r = migrateSpeaker(job->ip, job->baseUrl);
         Serial.printf("[bg:migrate] %s -> %s ok=%d msg=%s\n",
                       job->deviceId.c_str(), job->baseUrl.c_str(),
                       (int)r.ok, r.message.c_str());
         if (r.ok) {
-            bosefix::SpeakerInventory::LockGuard g(inv);
+            sixback::SpeakerInventory::LockGuard g(inv);
             if (auto* sp = inv.findById(job->deviceId)) {
-                sp->status    = bosefix::MigrationStatus::MIGRATED;
+                sp->status    = sixback::MigrationStatus::MIGRATED;
                 sp->cloudUrl  = job->baseUrl;
                 sp->ownedByUs = true;
                 inv.saveToNVS();
@@ -312,9 +312,9 @@ void migrateRevertWorker_(void* arg) {
         Serial.printf("[bg:revert] %s ok=%d msg=%s\n",
                       job->deviceId.c_str(), (int)r.ok, r.message.c_str());
         if (r.ok) {
-            bosefix::SpeakerInventory::LockGuard g(inv);
+            sixback::SpeakerInventory::LockGuard g(inv);
             if (auto* sp = inv.findById(job->deviceId)) {
-                sp->status    = bosefix::MigrationStatus::NOT_MIGRATED;
+                sp->status    = sixback::MigrationStatus::NOT_MIGRATED;
                 sp->cloudUrl  = "https://streaming.bose.com";
                 sp->ownedByUs = false;
                 inv.saveToNVS();
@@ -327,10 +327,10 @@ void migrateRevertWorker_(void* arg) {
 
 void handleMigrate(AsyncWebServerRequest* req) {
     String id = req->pathArg(0);
-    auto& inv = bosefix::SpeakerInventory::instance();
+    auto& inv = sixback::SpeakerInventory::instance();
     String ip;
     {
-        bosefix::SpeakerInventory::LockGuard g(inv);
+        sixback::SpeakerInventory::LockGuard g(inv);
         auto* sp = inv.findById(id);
         if (!sp) { req->send(404, "application/json", "{\"error\":\"unknown deviceId\"}"); return; }
         ip = sp->ip;
@@ -342,14 +342,14 @@ void handleMigrate(AsyncWebServerRequest* req) {
     // ueberschreibt seinen Local-Cache. handleDevicePresets selbst schickt
     // jetzt zwar 404 bei leerem Store, aber wir wollen den Migrate sowieso
     // erst freischalten, wenn die Presets im Store sind.
-    if (!bosefix::PresetStore::instance().hasAnyFor(id)) {
+    if (!sixback::PresetStore::instance().hasAnyFor(id)) {
         int countOk = 0, countAban = 0, httpCode = 0;
         int status = importPresetsFromSpeaker_(id, countOk, countAban, httpCode,
                                                 JsonArray(), JsonArray());
         Serial.printf("[migrate-safe] %s pre-import status=%d ok=%d aban=%d "
                       "speakerhttp=%d store-now-has=%d\n",
                       id.c_str(), status, countOk, countAban, httpCode,
-                      (int)bosefix::PresetStore::instance().hasAnyFor(id));
+                      (int)sixback::PresetStore::instance().hasAnyFor(id));
         if (status != 200) {
             String err = "{\"error\":\"pre-migrate preset-import failed (status ";
             err += status; err += ")\",\"speaker_http\":"; err += httpCode; err += "}";
@@ -361,7 +361,13 @@ void handleMigrate(AsyncWebServerRequest* req) {
         // damit ist nichts verloren. Speaker behaelt was er hat (= nichts).
     }
 
-    bosefix::persistPreMigrateSnapshot(id, /*force=*/false);
+    sixback::persistPreMigrateSnapshot(id, /*force=*/false);
+
+    // DLNA-Server-UUIDs vom Speaker cachen, damit handleAccountFull spaeter
+    // pro UUID eine dedizierte STORED_MUSIC-Source deklarieren kann.
+    // Ohne diese sieht der Speaker STORED_MUSIC-Presets als
+    // UNKNOWN_SOURCE_ERROR (1005) nach Migration zu SixBack.
+    sixback::SpeakerInventory::instance().refreshMediaServers(id);
 
     auto* job = new MigrateJob_{id, ip, myBaseUrl(), /*doMigrate=*/true};
     BaseType_t r = xTaskCreate(migrateRevertWorker_, "bg-migrate", 4096, job,
@@ -373,15 +379,15 @@ void handleMigrate(AsyncWebServerRequest* req) {
     }
     req->send(202, "application/json",
               "{\"ok\":true,\"queued\":true,"
-              "\"message\":\"migration started in background — refresh speaker card in ~10s to see result\"}");
+              "\"message\":\"migration started in background — refresh speaker card in ~90s to see result (Bose-Reboot + Telnet-Settle)\"}");
 }
 
 void handleRevert(AsyncWebServerRequest* req) {
     String id = req->pathArg(0);
-    auto& inv = bosefix::SpeakerInventory::instance();
+    auto& inv = sixback::SpeakerInventory::instance();
     String ip;
     {
-        bosefix::SpeakerInventory::LockGuard g(inv);
+        sixback::SpeakerInventory::LockGuard g(inv);
         auto* sp = inv.findById(id);
         if (!sp) { req->send(404, "application/json", "{\"error\":\"unknown deviceId\"}"); return; }
         ip = sp->ip;
@@ -396,15 +402,15 @@ void handleRevert(AsyncWebServerRequest* req) {
     }
     req->send(202, "application/json",
               "{\"ok\":true,\"queued\":true,"
-              "\"message\":\"revert started in background — refresh speaker card in ~10s to see result\"}");
+              "\"message\":\"revert started in background — refresh speaker card in ~90s to see result (Bose-Reboot + Telnet-Settle)\"}");
 }
 
 void handleReboot(AsyncWebServerRequest* req) {
     String id = req->pathArg(0);
-    auto& inv = bosefix::SpeakerInventory::instance();
+    auto& inv = sixback::SpeakerInventory::instance();
     String ip;
     {
-        bosefix::SpeakerInventory::LockGuard g(inv);
+        sixback::SpeakerInventory::LockGuard g(inv);
         auto* sp = inv.findById(id);
         if (!sp) { req->send(404, "application/json", "{\"error\":\"unknown deviceId\"}"); return; }
         ip = sp->ip;
@@ -416,7 +422,7 @@ void handleReboot(AsyncWebServerRequest* req) {
 }
 
 void handleRefreshStatus(AsyncWebServerRequest* req) {
-    bosefix::SpeakerInventory::instance().refreshMigrationStatus();
+    sixback::SpeakerInventory::instance().refreshMigrationStatus();
     JsonDocument doc;
     emitSpeakers(req, doc);
 }
@@ -428,15 +434,15 @@ void handleGetPresets(AsyncWebServerRequest* req) {
     String id = req->pathArg(0);
     JsonDocument doc;
     JsonArray arr = doc["presets"].to<JsonArray>();
-    for (auto& p : bosefix::PresetStore::instance().getForSpeaker(id)) {
+    for (auto& p : sixback::PresetStore::instance().getForSpeaker(id)) {
         JsonObject o = arr.add<JsonObject>();
         o["slot"]      = p.slot;
-        o["source"]    = bosefix::presetSourceToStr(p.source);
+        o["source"]    = sixback::presetSourceToStr(p.source);
         o["name"]      = p.name;
         o["stationId"] = p.stationId;
         o["streamUrl"] = p.streamUrl;
         o["imageUrl"]  = p.imageUrl;
-        if (p.source == bosefix::PresetSource::OPAQUE) {
+        if (p.source == sixback::PresetSource::OPAQUE) {
             o["opaqueSourceName"] = p.opaqueSourceName;
             // rawContentItem nicht standardmaessig ausliefern (kann gross sein,
             // und ohnehin nur fuer Diagnose interessant — Diagnostic-Snapshot
@@ -452,14 +458,14 @@ void handlePutPreset(AsyncWebServerRequest* req, JsonDocument& body) {
     String id  = req->pathArg(0);
     uint8_t slot = req->pathArg(1).toInt();
     if (slot < 1 || slot > 6) { req->send(400, "application/json", "{\"error\":\"slot 1..6\"}"); return; }
-    bosefix::Preset p;
+    sixback::Preset p;
     p.slot      = slot;
     // source-Validierung an der Grenze: presetSourceFromStr returnt EMPTY
     // fuer unbekannte Strings (silent default), was sonst zu einem nicht
     // abspielbaren Preset-Slot fuehrt der den User irritiert. Lieber 400.
     String srcStr = String((const char*)(body["source"] | "TUNEIN"));
-    p.source    = bosefix::presetSourceFromStr(srcStr);
-    if (p.source == bosefix::PresetSource::EMPTY && srcStr != "EMPTY") {
+    p.source    = sixback::presetSourceFromStr(srcStr);
+    if (p.source == sixback::PresetSource::EMPTY && srcStr != "EMPTY") {
         req->send(400, "application/json",
                   String("{\"error\":\"unknown source\",\"got\":\"") + srcStr +
                   "\",\"expected\":\"TUNEIN | LOCAL_INTERNET_RADIO\"}");
@@ -469,14 +475,14 @@ void handlePutPreset(AsyncWebServerRequest* req, JsonDocument& body) {
     p.stationId = (const char*)(body["stationId"] | "");
     p.streamUrl = (const char*)(body["streamUrl"] | "");
     p.imageUrl  = (const char*)(body["imageUrl"]  | "");
-    bool ok = bosefix::PresetStore::instance().set(id, p);
+    bool ok = sixback::PresetStore::instance().set(id, p);
     req->send(ok ? 200 : 500, "application/json", ok ? "{\"ok\":true}" : "{\"error\":\"set failed\"}");
 }
 
 void handleDeletePreset(AsyncWebServerRequest* req) {
     String id = req->pathArg(0);
     uint8_t slot = req->pathArg(1).toInt();
-    bool ok = bosefix::PresetStore::instance().clear(id, slot);
+    bool ok = sixback::PresetStore::instance().clear(id, slot);
     req->send(ok ? 200 : 404, "application/json", ok ? "{\"ok\":true}" : "{\"error\":\"unknown\"}");
 }
 
@@ -521,10 +527,10 @@ int importPresetsFromSpeaker_(const String& id, int& countOk, int& countAban,
                               JsonArray abandoned) {
     countOk = countAban = 0;
     httpCodeOut = 0;
-    auto& inv = bosefix::SpeakerInventory::instance();
+    auto& inv = sixback::SpeakerInventory::instance();
     String spIp;
     {
-        bosefix::SpeakerInventory::LockGuard g(inv);
+        sixback::SpeakerInventory::LockGuard g(inv);
         auto* sp = inv.findById(id);
         if (!sp) return 404;
         spIp = sp->ip;
@@ -540,7 +546,7 @@ int importPresetsFromSpeaker_(const String& id, int& countOk, int& countAban,
     String xml = http.getString();
     http.end();
 
-    std::vector<bosefix::Preset> toSet;
+    std::vector<sixback::Preset> toSet;
     toSet.reserve(6);
     int pos = 0;
     while (true) {
@@ -559,11 +565,11 @@ int importPresetsFromSpeaker_(const String& id, int& countOk, int& countAban,
         String name = xmlExtractTag (xml, idEnd, presetClose, "itemName");
         String img  = xmlExtractTag (xml, idEnd, presetClose, "containerArt");
 
-        bosefix::Preset p;
+        sixback::Preset p;
         p.slot = slot;
-        auto nr = bosefix::normalizePreset(src, loc, name, img, p);
+        auto nr = sixback::normalizePreset(src, loc, name, img, p);
 
-        if (nr.status == bosefix::NormalizeStatus::OK_OPAQUE) {
+        if (nr.status == sixback::NormalizeStatus::OK_OPAQUE) {
             // Vollstaendiges <ContentItem>...</ContentItem> extrahieren —
             // wird beim Sync 1:1 ans Speaker zurueckgeschickt. Speaker spricht
             // DLNA/UPnP/Bluetooth selbst an, unsere Cloud ist nicht
@@ -578,7 +584,7 @@ int importPresetsFromSpeaker_(const String& id, int& countOk, int& countAban,
             }
         }
 
-        if (nr.status == bosefix::NormalizeStatus::ABANDONED) {
+        if (nr.status == sixback::NormalizeStatus::ABANDONED) {
             if (!abandoned.isNull()) {
                 JsonObject o = abandoned.add<JsonObject>();
                 o["slot"]   = slot;
@@ -592,15 +598,15 @@ int importPresetsFromSpeaker_(const String& id, int& countOk, int& countAban,
                 JsonObject o = imported.add<JsonObject>();
                 o["slot"]            = p.slot;
                 o["name"]            = p.name;
-                o["source"]          = bosefix::presetSourceToStr(p.source);
+                o["source"]          = sixback::presetSourceToStr(p.source);
                 o["stationId"]       = p.stationId;
                 o["streamUrl"]       = p.streamUrl;
-                o["normalize"]       = bosefix::normalizeStatusToStr(nr.status);
-                if (nr.status == bosefix::NormalizeStatus::OK_CONVERTED) {
+                o["normalize"]       = sixback::normalizeStatusToStr(nr.status);
+                if (nr.status == sixback::NormalizeStatus::OK_CONVERTED) {
                     o["converted_from"] = nr.originalSource;
                     o["reason"]         = nr.reason;
                 }
-                if (nr.status == bosefix::NormalizeStatus::OK_OPAQUE) {
+                if (nr.status == sixback::NormalizeStatus::OK_OPAQUE) {
                     o["opaque_source"]  = p.opaqueSourceName;
                     o["raw_bytes"]      = (uint16_t)p.rawContentItem.length();
                 }
@@ -615,7 +621,7 @@ int importPresetsFromSpeaker_(const String& id, int& countOk, int& countAban,
     // leerem-vector wuerde unseren Store auch leer machen. Deshalb nur dann
     // schreiben wenn was gefunden wurde — sonst Store unveraendert lassen.
     if (!toSet.empty()) {
-        bosefix::PresetStore::instance().setSlots(id, toSet);
+        sixback::PresetStore::instance().setSlots(id, toSet);
     }
     return 200;
 }
@@ -651,7 +657,7 @@ void handleImportFromDevice(AsyncWebServerRequest* req) {
 // bleibt.
 struct PushPresetJob_ {
     String spIp;
-    bosefix::Preset p;
+    sixback::Preset p;
 };
 
 // Persistenter Single-Worker mit FreeRTOS-Queue. Vorgaenger-Designs hatten
@@ -678,11 +684,11 @@ static void doPush_(const PushPresetJob_& job) {
         //   LOCAL_INTERNET_RADIO -> "" (das ist der ESP-eigene Stream-Proxy,
         //             Speaker akzeptiert leeren Account).
         const char* srcAcct =
-            (job.p.source == bosefix::PresetSource::TUNEIN) ? "TuneIn" : "";
+            (job.p.source == sixback::PresetSource::TUNEIN) ? "TuneIn" : "";
         String ci = "<ContentItem source=\"";
-        ci += bosefix::presetSourceToStr(job.p.source);
+        ci += sixback::presetSourceToStr(job.p.source);
         ci += "\" type=\"stationurl\" location=\"";
-        if (job.p.source == bosefix::PresetSource::TUNEIN) {
+        if (job.p.source == sixback::PresetSource::TUNEIN) {
             ci += "/v1/playback/station/" + job.p.stationId;
         } else {
             ci += job.p.streamUrl;
@@ -744,16 +750,16 @@ void handlePushPresetToDevice(AsyncWebServerRequest* req) {
 
     String id = req->pathArg(0);
     uint8_t slot = req->pathArg(1).toInt();
-    auto& inv = bosefix::SpeakerInventory::instance();
+    auto& inv = sixback::SpeakerInventory::instance();
     String spIp;
     {
-        bosefix::SpeakerInventory::LockGuard g(inv);
+        sixback::SpeakerInventory::LockGuard g(inv);
         auto* sp = inv.findById(id);
         if (!sp) { req->send(404, "application/json", "{\"error\":\"unknown deviceId\"}"); return; }
         spIp = sp->ip;
     }
-    auto p = bosefix::PresetStore::instance().get(id, slot);
-    if (p.source == bosefix::PresetSource::EMPTY) {
+    auto p = sixback::PresetStore::instance().get(id, slot);
+    if (p.source == sixback::PresetSource::EMPTY) {
         req->send(400, "application/json", "{\"error\":\"empty slot\"}"); return;
     }
     auto* job = new PushPresetJob_{spIp, p};
@@ -776,8 +782,8 @@ void handlePushPresetToDevice(AsyncWebServerRequest* req) {
 void handlePutGroup(AsyncWebServerRequest* req, JsonDocument& body) {
     String id = req->pathArg(0);
     String groupId = (const char*)(body["group_id"] | "");
-    auto& inv = bosefix::SpeakerInventory::instance();
-    bosefix::SpeakerInventory::LockGuard g(inv);
+    auto& inv = sixback::SpeakerInventory::instance();
+    sixback::SpeakerInventory::LockGuard g(inv);
     auto* sp = inv.findById(id);
     if (!sp) { req->send(404, "application/json", "{\"error\":\"unknown\"}"); return; }
     sp->groupId = groupId;
@@ -794,11 +800,11 @@ void handleSyncGroup(AsyncWebServerRequest* req, JsonDocument& body) {
         }
     } else if (body["group_id"].is<const char*>()) {
         String gid = (const char*)body["group_id"];
-        for (auto& s : bosefix::SpeakerInventory::instance().list()) {
+        for (auto& s : sixback::SpeakerInventory::instance().list()) {
             if (s.groupId == gid && s.deviceId != src) targets.push_back(s.deviceId);
         }
     }
-    int n = bosefix::PresetStore::instance().syncToGroup(src, targets);
+    int n = sixback::PresetStore::instance().syncToGroup(src, targets);
     JsonDocument doc; doc["ok"] = true; doc["synced_to"] = n;
     String b; serializeJson(doc, b);
     req->send(200, "application/json", b);
@@ -809,7 +815,7 @@ void handleSyncGroup(AsyncWebServerRequest* req, JsonDocument& body) {
 // -----------------------------------------------------------------------------
 void handleTuneInResolve(AsyncWebServerRequest* req) {
     String id = req->pathArg(0);
-    auto r = bosefix::resolveTuneInStruct(id);
+    auto r = sixback::resolveTuneInStruct(id);
     JsonDocument doc;
     doc["ok"]        = r.ok;
     doc["stationId"] = r.stationId;
@@ -844,7 +850,7 @@ void handleTuneInSearch(AsyncWebServerRequest* req) {
 // System
 // -----------------------------------------------------------------------------
 void handleFactoryResetWifi(AsyncWebServerRequest* req) {
-    bosefix::factoryResetWifi();
+    sixback::factoryResetWifi();
     req->send(200, "application/json", "{\"ok\":true,\"reboot_in_ms\":500}");
     delay(500); ESP.restart();
 }
@@ -929,8 +935,8 @@ void handleOtaFsUpload(AsyncWebServerRequest* req, String filename,
 //   GET  /api/update/status   — JSON-Snapshot fuer UI-Polling.
 // -----------------------------------------------------------------------------
 namespace {
-const char* otaStateName_(bosefix::ota::State s) {
-    using S = bosefix::ota::State;
+const char* otaStateName_(sixback::ota::State s) {
+    using S = sixback::ota::State;
     switch (s) {
         case S::IDLE:       return "idle";
         case S::CHECKING:   return "checking";
@@ -943,7 +949,7 @@ const char* otaStateName_(bosefix::ota::State s) {
 }
 
 void writeOtaStatus_(AsyncWebServerRequest* req) {
-    auto st = bosefix::ota::getStatus();
+    auto st = sixback::ota::getStatus();
     JsonDocument doc;
     doc["state"]    = otaStateName_(st.state);
     doc["current"]  = st.current;
@@ -960,7 +966,7 @@ void writeOtaStatus_(AsyncWebServerRequest* req) {
 } // anon
 
 void handleOtaUpdateCheck(AsyncWebServerRequest* req) {
-    bosefix::ota::checkOnline();
+    sixback::ota::checkOnline();
     writeOtaStatus_(req);
 }
 
@@ -969,11 +975,11 @@ void handleOtaUpdateInstall(AsyncWebServerRequest* req) {
     // Versions-Standes (z.B. "ich will von install.busware.de denselben Build
     // nochmal pullen", oder Demo des Progress-Bars wenn current >= latest).
     bool force = req->hasParam("force") && req->getParam("force")->value() == "1";
-    bool ok = force ? bosefix::ota::installOnlineForceAsync()
-                    : bosefix::ota::installOnlineAsync();
+    bool ok = force ? sixback::ota::installOnlineForceAsync()
+                    : sixback::ota::installOnlineAsync();
     if (!ok) {
-        auto st = bosefix::ota::getStatus();
-        if (!force && st.state != bosefix::ota::State::AVAILABLE) {
+        auto st = sixback::ota::getStatus();
+        if (!force && st.state != sixback::ota::State::AVAILABLE) {
             req->send(409, "application/json",
                       String("{\"error\":\"no update available — run /api/update/check first (use ?force=1 to re-install)\",\"state\":\"")
                        + otaStateName_(st.state) + "\"}");
@@ -999,11 +1005,11 @@ void handleRoot(AsyncWebServerRequest* req) {
     String ip = WiFi.localIP().toString();
     String html =
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
-        "<title>BoseFix32 " FW_VERSION_STRING "</title>"
+        "<title>SixBack " FW_VERSION_STRING "</title>"
         "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
         "<style>body{font-family:-apple-system,Segoe UI,sans-serif;max-width:40em;margin:3em auto;padding:0 1em}"
         "code{background:#fee;padding:.1em .3em;border-radius:3px}</style></head><body>"
-        "<h1>BoseFix32</h1><p>Web UI not flashed. Use the JSON API directly:</p>"
+        "<h1>SixBack</h1><p>Web UI not flashed. Use the JSON API directly:</p>"
         "<ul>"
           "<li><code>GET /api/status</code></li>"
           "<li><code>GET /api/speakers</code></li>"
@@ -1017,7 +1023,7 @@ void handleRoot(AsyncWebServerRequest* req) {
           "<li><code>POST /api/ota/fs</code> (multipart littlefs.bin)</li>"
         "</ul>"
         "<p>Version <code>" FW_VERSION_STRING "</code> &middot; Build " FW_BUILD_DATE
-        " &middot; <a href=\"https://github.com/tostmann/BoseFix32\">github.com/tostmann/BoseFix32</a></p>"
+        " &middot; <a href=\"https://github.com/tostmann/SixBack\">github.com/tostmann/SixBack</a></p>"
         "</body></html>";
     req->send(200, "text/html; charset=utf-8", html);
 }
@@ -1026,7 +1032,7 @@ void handleRoot(AsyncWebServerRequest* req) {
 
 // -----------------------------------------------------------------------------
 // IP-Failsafe Test-Endpoint
-//   Setzt NVS `bosefix-net.last_ip` auf einen anderen Wert, sodass beim
+//   Setzt NVS `sixback-net.last_ip` auf einen anderen Wert, sodass beim
 //   naechsten Boot `ipFailsafeCheck()` einen IP-Wechsel erkennt und alle
 //   owned-Speaker per Telnet re-migriert. Reine Test-Hilfe, kein Cleanup
 //   noetig — der Failsafe persistiert beim Lauf die aktuelle IP wieder.
@@ -1034,7 +1040,7 @@ void handleRoot(AsyncWebServerRequest* req) {
 void handleTestForceIpChange(AsyncWebServerRequest* req, JsonDocument& body) {
     String fakeIp = (const char*)(body["fake_ip"] | "10.10.99.99");
     Preferences p;
-    if (!p.begin("bosefix-net", false)) {
+    if (!p.begin("sixback-net", false)) {
         req->send(500, "application/json", "{\"error\":\"nvs open failed\"}"); return;
     }
     String oldStored = p.getString("last_ip", "");
@@ -1054,8 +1060,8 @@ void handleTestForceIpChange(AsyncWebServerRequest* req, JsonDocument& body) {
 // Auto-Mode (Zero-Touch Migration beim Boot)
 // -----------------------------------------------------------------------------
 void handleGetAutoMode(AsyncWebServerRequest* req) {
-    auto cfg = bosefix::loadAutoModeConfig();
-    auto st  = bosefix::getAutoModeStatus();
+    auto cfg = sixback::loadAutoModeConfig();
+    auto st  = sixback::getAutoModeStatus();
     JsonDocument doc;
     doc["config"]["enabled"]         = cfg.enabled;
     doc["config"]["dry_run"]         = cfg.dryRun;
@@ -1083,13 +1089,13 @@ void handleGetAutoMode(AsyncWebServerRequest* req) {
 }
 
 void handlePutAutoMode(AsyncWebServerRequest* req, JsonDocument& body) {
-    auto cfg = bosefix::loadAutoModeConfig();
+    auto cfg = sixback::loadAutoModeConfig();
     if (body["enabled"].is<bool>())            cfg.enabled       = body["enabled"].as<bool>();
     if (body["dry_run"].is<bool>())            cfg.dryRun        = body["dry_run"].as<bool>();
     if (body["boot_delay_ms"].is<uint32_t>())  cfg.bootDelayMs   = body["boot_delay_ms"].as<uint32_t>();
     if (body["max_per_boot"].is<uint32_t>())   cfg.maxPerBoot    = body["max_per_boot"].as<uint32_t>();
     if (body["cron_interval_s"].is<uint32_t>())cfg.cronIntervalS = body["cron_interval_s"].as<uint32_t>();
-    bosefix::saveAutoModeConfig(cfg);
+    sixback::saveAutoModeConfig(cfg);
     JsonDocument resp;
     resp["ok"]                         = true;
     resp["config"]["enabled"]          = cfg.enabled;
@@ -1111,9 +1117,9 @@ void handlePutAutoMode(AsyncWebServerRequest* req, JsonDocument& body) {
 void handleEventsAll(AsyncWebServerRequest* req) {
     JsonDocument doc;
     JsonArray arr = doc["devices"].to<JsonArray>();
-    bosefix::eventStoreAllDevicesJson(arr);
+    sixback::eventStoreAllDevicesJson(arr);
     doc["count"] = arr.size();
-    bosefix::EventStoreStats st = bosefix::eventStoreStats();
+    sixback::EventStoreStats st = sixback::eventStoreStats();
     JsonObject stats = doc["stats"].to<JsonObject>();
     stats["chunks_seen"]      = st.chunks_seen;
     stats["bodies_completed"] = st.bodies_completed;
@@ -1130,7 +1136,7 @@ void handleNowPlaying(AsyncWebServerRequest* req) {
     String id = req->pathArg(0);
     JsonDocument doc;
     JsonObject now = doc["now"].to<JsonObject>();
-    bosefix::eventStoreNowPlayingJson(id, now);
+    sixback::eventStoreNowPlayingJson(id, now);
     doc["device_id"] = id;
     String b; serializeJson(doc, b);
     req->send(200, "application/json", b);
@@ -1140,7 +1146,7 @@ void handleSpeakerEvents(AsyncWebServerRequest* req) {
     String id = req->pathArg(0);
     JsonDocument doc;
     JsonArray arr = doc["events"].to<JsonArray>();
-    bosefix::eventStoreEventsJson(id, arr);
+    sixback::eventStoreEventsJson(id, arr);
     doc["device_id"] = id;
     doc["count"]     = arr.size();
     String b; serializeJson(doc, b);
@@ -1148,7 +1154,7 @@ void handleSpeakerEvents(AsyncWebServerRequest* req) {
 }
 
 void handleEventsClear(AsyncWebServerRequest* req) {
-    bosefix::eventStoreClearAll();
+    sixback::eventStoreClearAll();
     req->send(200, "application/json", "{\"ok\":true}");
 }
 
@@ -1182,20 +1188,20 @@ void handleDiagnosticSnapshot(AsyncWebServerRequest* req) {
 
     if (src == "stored") {
         String stored;
-        if (!bosefix::loadStoredSnapshot(id, stored)) {
+        if (!sixback::loadStoredSnapshot(id, stored)) {
             req->send(404, "application/json",
                       "{\"error\":\"no stored snapshot for this device\"}");
             return;
         }
         AsyncWebServerResponse* resp = req->beginResponse(200, "application/json", stored);
         resp->addHeader("Content-Disposition",
-                        "attachment; filename=\"bosefix-snapshot-" + id + "-stored.json\"");
+                        "attachment; filename=\"sixback-snapshot-" + id + "-stored.json\"");
         req->send(resp);
         return;
     }
 
     JsonDocument doc;
-    if (!bosefix::captureLiveSnapshot(id, doc)) {
+    if (!sixback::captureLiveSnapshot(id, doc)) {
         req->send(502, "application/json",
                   "{\"error\":\"speaker unreachable or unknown deviceId\"}");
         return;
@@ -1203,14 +1209,14 @@ void handleDiagnosticSnapshot(AsyncWebServerRequest* req) {
     doc["snapshot_kind"] = "live";
 
     if (req->hasParam("save") && req->getParam("save")->value() == "1") {
-        bosefix::persistPreMigrateSnapshot(id, /*force=*/true);
+        sixback::persistPreMigrateSnapshot(id, /*force=*/true);
     }
 
     String body;
     serializeJson(doc, body);
     AsyncWebServerResponse* resp = req->beginResponse(200, "application/json", body);
     resp->addHeader("Content-Disposition",
-                    "attachment; filename=\"bosefix-snapshot-" + id + "-live.json\"");
+                    "attachment; filename=\"sixback-snapshot-" + id + "-live.json\"");
     req->send(resp);
 }
 
@@ -1218,7 +1224,7 @@ void handleDiagnosticSnapshotMeta(AsyncWebServerRequest* req) {
     String id = req->pathArg(0);
     JsonDocument doc;
     doc["device_id"] = id;
-    doc["has_stored"] = bosefix::hasStoredSnapshot(id);
+    doc["has_stored"] = sixback::hasStoredSnapshot(id);
     String body;
     serializeJson(doc, body);
     req->send(200, "application/json", body);
@@ -1281,7 +1287,7 @@ void registerApiEndpoints(AsyncWebServer& ui) {
     ui.on("^/api/ota/fs$", HTTP_POST, handleOtaFsFinalize, handleOtaFsUpload);
 
     // Online-Update — HTTPS-Pull von install.busware.de
-    bosefix::ota::init(String(FW_VERSION_STRING));
+    sixback::ota::init(String(FW_VERSION_STRING));
     ui.on("/api/update/check",   HTTP_GET,  handleOtaUpdateCheck);
     ui.on("/api/update/install", HTTP_POST, handleOtaUpdateInstall);
     ui.on("/api/update/status",  HTTP_GET,  handleOtaUpdateStatus);

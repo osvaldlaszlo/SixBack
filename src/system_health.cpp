@@ -10,7 +10,7 @@
 #include <esp_system.h>
 #include <esp_task_wdt.h>
 
-namespace bosefix {
+namespace sixback {
 
 namespace {
 
@@ -25,7 +25,7 @@ constexpr uint8_t  HEALTH_PING_MISS_FOR_OFFLINE = 5;                   // 5x mis
 constexpr uint16_t HEALTH_PING_TIMEOUT_MS       = 800;                 // GET /info Timeout
 
 // ------ NVS-State ------------------------------------------------------------
-constexpr const char* NVS_NS = "bosefix-sys";
+constexpr const char* NVS_NS = "sixback-sys";
 
 struct HealthState {
     uint32_t boot_count       = 0;
@@ -290,4 +290,4 @@ const char* lastResetReasonStr() {
     return resetReasonText((esp_reset_reason_t)g.last_reset_raw);
 }
 
-}  // namespace bosefix
+}  // namespace sixback

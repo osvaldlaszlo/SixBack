@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// BoseFix32 — Diagnostic Snapshot
+// SixBack — Diagnostic Snapshot
 //
 // Snapshot des Speakers im IST-Zustand: alle relevanten BMX-API-Antworten
 // (XML wie der Speaker sie liefert) + Telnet `sys configuration list`.
@@ -17,7 +17,7 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 
-namespace bosefix {
+namespace sixback {
 
 // Live-Capture. Holt alle BMX-Endpoints am Speaker (Port 8090, XML-Bodies)
 // + Telnet `sys configuration list` + setzt die Header-Felder aus dem
@@ -43,6 +43,6 @@ bool loadStoredSnapshot(const String& deviceId, String& outJson);
 // True wenn fuer das Geraet ein persistierter Snapshot vorliegt.
 bool hasStoredSnapshot(const String& deviceId);
 
-} // namespace bosefix
+} // namespace sixback
 
 #endif

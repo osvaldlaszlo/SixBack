@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// BoseFix32 — Speaker-Inventory
+// SixBack — Speaker-Inventory
 //
 // Verwaltet die Liste aller im LAN erkannten Bose-SoundTouch-Speaker:
 //   - SSDP-Discovery (Multicast M-SEARCH)
@@ -17,13 +17,17 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 
-namespace bosefix {
+namespace sixback {
 
 enum class MigrationStatus : uint8_t {
-    UNKNOWN         = 0,  // nie geprueft / Telnet-Fehler
+    UNKNOWN         = 0,  // nie geprueft / Telnet-Antwort nicht parsebar
     NOT_MIGRATED    = 1,  // /getpdo zeigt streaming.bose.com etc. (Originalzustand)
     MIGRATED        = 2,  // /getpdo zeigt eine lokale Replacement-URL (irgendwo - kann veraltet sein)
-    OFFLINE         = 3,  // Telnet TCP-Connect fehlgeschlagen
+    OFFLINE         = 3,  // Speaker komplett unreachable (weder Telnet noch BMX)
+    SETTLING        = 4,  // Telnet down, aber BMX-API (Port 8090) up — Speaker
+                          //   lebt, Diag-Shell transient nicht da (typisch waehrend
+                          //   Cloud-Migration-Reboot). Wird beim naechsten Refresh
+                          //   neu klassifiziert.
 };
 
 struct Speaker {
@@ -41,6 +45,12 @@ struct Speaker {
                             // oder vom User reverted.
     uint32_t lastSeenMs;
     String groupId;         // freitext, default ""
+
+    // DLNA-Server-UUIDs die dieser Speaker via /listMediaServers sieht.
+    // Werden vom Speaker bei jedem account/full erwartet als sourceAccount-
+    // Match damit STORED_MUSIC-Presets nicht als "Quelle nicht vorhanden"
+    // verworfen werden. Liste wird bei Migrate/Refresh aktualisiert.
+    std::vector<String> mediaServerUuids;
 };
 
 enum class ProbeFailReason : uint8_t {
@@ -115,6 +125,12 @@ public:
     // abgelegt — fuer Diagnose-API/UI-Anzeige.
     bool addByIp(const String& ip, ProbeFailure* failOut = nullptr);
 
+    // /listMediaServers vom Speaker pullen und die UUIDs in seinem Speaker-
+    // Eintrag persistieren. Wird vom Migrate-Flow aufgerufen damit
+    // STORED_MUSIC-Presets nach Cloud-Wechsel weiter funktionieren (siehe
+    // Memo reference-bosefix32-stored-music-source-decl).
+    void refreshMediaServers(const String& deviceId);
+
     // Loescht einen Speaker aus dem Cache (nicht vom Geraet).
     bool remove(const String& deviceId);
 
@@ -151,6 +167,6 @@ private:
 
 const char* migrationStatusToStr(MigrationStatus s);
 
-} // namespace bosefix
+} // namespace sixback
 
 #endif

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// BoseFix32 — Preset-Store
+// SixBack — Preset-Store
 //
 // Verwaltet pro Speaker eine Liste von max. 6 Presets, persistent in NVS.
 // Plus Gruppen-Mechanik: ein Speaker kann Mitglied einer Gruppe sein,
@@ -19,13 +19,13 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 
-namespace bosefix {
+namespace sixback {
 
 enum class PresetSource : uint8_t {
     EMPTY                = 0,
     TUNEIN               = 1,
     LOCAL_INTERNET_RADIO = 2,
-    // OPAQUE = Preset einer Source-Klasse die BoseFix32 nicht selbst
+    // OPAQUE = Preset einer Source-Klasse die SixBack nicht selbst
     // aufloest (z.B. STORED_MUSIC, UPNP, BLUETOOTH-Preset). Wir speichern
     // das komplette urspruengliche <ContentItem>-XML in rawContentItem und
     // reichen es beim Sync 1:1 zurueck — der Speaker kommuniziert direkt
@@ -132,6 +132,6 @@ private:
 const char* presetSourceToStr(PresetSource s);
 PresetSource presetSourceFromStr(const String& s);
 
-} // namespace bosefix
+} // namespace sixback
 
 #endif

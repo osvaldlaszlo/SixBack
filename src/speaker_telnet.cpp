@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// BoseFix32 — Speaker-Bootstrap via Telnet Port 17000
+// SixBack — Speaker-Bootstrap via Telnet Port 17000
 //
 // Implementiert die in RESEARCH.md §12 verifizierte Sequenz:
 //   sys configuration bmxRegistryUrl <base>/bmx/registry/v1/services

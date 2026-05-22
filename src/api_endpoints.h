@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// BoseFix32 — Verwaltungs-API (REST + Mini-HTML) auf Port 80
+// SixBack — Verwaltungs-API (REST + Mini-HTML) auf Port 80
 //
 // Diese API ist NICHT für die Speaker — die sprechen das Cloud-Mock
 // auf Port 8000 (siehe bose_endpoints.h). Diese hier ist für:

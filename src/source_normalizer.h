@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// BoseFix32 — Source-Normalizer
+// SixBack — Source-Normalizer
 //
 // Wandelt ein vom Speaker geliefertes ContentItem in einen Preset um, der von
-// BoseFix32 nach Migration spielbar ist:
+// SixBack nach Migration spielbar ist:
 //   TUNEIN / LOCAL_INTERNET_RADIO / INTERNET_RADIO  →  1:1 uebernommen
 //   RADIO_BROWSER  →  UUID via radio-browser.info aufgeloest, als LOCAL gespeichert
 //   alles andere   →  ABANDONED (Slot kann nach Migration nicht spielen)
 //
-// Hintergrund: BoseFix32 deklariert in bmx_services.json RADIO_BROWSER als
+// Hintergrund: SixBack deklariert in bmx_services.json RADIO_BROWSER als
 // available; der Speaker meldet die Source als READY und akzeptiert /select.
 // Es fehlen aber die /bmx/radiobrowser/v1/...-Resolver-Routen → Playback
 // landet in INVALID_SOURCE. Verifiziert am Kuechen-Speaker 2026-05-17.
@@ -17,7 +17,7 @@
 #include <Arduino.h>
 #include "preset_store.h"
 
-namespace bosefix {
+namespace sixback {
 
 enum class NormalizeStatus : uint8_t {
     OK_PASSTHROUGH = 0,  // Source nativ supported, 1:1 uebernommen
@@ -47,6 +47,6 @@ NormalizeResult normalizePreset(const String& sourceStr,
 
 const char* normalizeStatusToStr(NormalizeStatus s);
 
-} // namespace bosefix
+} // namespace sixback
 
 #endif

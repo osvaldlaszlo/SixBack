@@ -8,10 +8,10 @@
 #include <HTTPClient.h>
 #include <Preferences.h>
 
-namespace bosefix {
+namespace sixback {
 
 namespace {
-constexpr const char* NVS_NS  = "bosefix-net";
+constexpr const char* NVS_NS  = "sixback-net";
 constexpr const char* KEY_IP  = "last_ip";
 
 // GET http://<ip>:8090/info → margeURL extrahieren.
@@ -114,4 +114,4 @@ void ipFailsafeCheck() {
     rememberIp(now);
 }
 
-} // namespace bosefix
+} // namespace sixback

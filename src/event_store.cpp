@@ -5,7 +5,7 @@
 #include <freertos/semphr.h>
 #include <map>
 
-namespace bosefix {
+namespace sixback {
 namespace {
 
 struct NowPlaying {
@@ -306,4 +306,4 @@ void eventStoreClearAll() {
     xSemaphoreGive(g_mtx);
 }
 
-} // namespace bosefix
+} // namespace sixback

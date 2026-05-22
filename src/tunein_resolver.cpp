@@ -6,18 +6,18 @@
 #include <HTTPClient.h>
 #include <WiFi.h>
 
-namespace bosefix {
+namespace sixback {
 
 namespace {
 
-constexpr const char* NVS_NS = "bosefix-tune";
+constexpr const char* NVS_NS = "sixback-tune";
 
 // NVS-Cache-Policy: einmal aufgeloest, ewig gueltig.
 // Ohne RTC haben wir keinen verlaesslichen Zeitbegriff (millis() resettet
 // bei jedem Boot, NTP-Anbindung ist optional). Daher: kein automatisches
 // Aging — Stale-Eintraege werden durch User-Reset/Re-Migration ersetzt.
 // Wenn ein Sender den Stream-URL wechselt, muss der User entweder Preset
-// neu setzen oder NVS-Namespace `bosefix-tune` per OTA-Reset loeschen.
+// neu setzen oder NVS-Namespace `sixback-tune` per OTA-Reset loeschen.
 // TODO: optionaler `POST /api/tunein/cache/clear`-Endpoint waere nuetzlich.
 
 // Fallback-Liste fuer "Internet weg und Cache leer" (= ganz frischer Boot
@@ -189,10 +189,10 @@ TuneInResolution resolveTuneInStruct(const String& stationId) {
     return r;
 }
 
-} // namespace bosefix
+} // namespace sixback
 
 String resolveTuneInStation(const String& stationId) {
-    auto r = bosefix::resolveTuneInStruct(stationId);
+    auto r = sixback::resolveTuneInStruct(stationId);
     if (!r.ok) {
         // Mock fuer unbekannte Stations - Speaker erwartet gueltiges JSON
         return String("{\"name\":\"Unknown (") + stationId + ")\","
@@ -200,5 +200,5 @@ String resolveTuneInStation(const String& stationId) {
                "\"audio\":{\"streamUrl\":\"\",\"streams\":[]},"
                "\"_links\":{\"bmx_reporting\":{\"href\":\"/v1/report?guide_id=" + stationId + "\"}}}";
     }
-    return bosefix::buildBoseJson(r.stationId, r.name, r.streamUrl, r.imageUrl, r.source);
+    return sixback::buildBoseJson(r.stationId, r.name, r.streamUrl, r.imageUrl, r.source);
 }

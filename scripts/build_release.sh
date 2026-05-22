@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# BoseFix32 — build release artefacts for ESP-Web-Tools distribution.
+# SixBack — build release artefacts for ESP-Web-Tools distribution.
 #
 # For each target (s3, c3, c6) it produces:
-#   webflasher/bosefix32-<tgt>-factory.bin   — merged bootloader+parts+app+fs
-#   webflasher/bosefix32-<tgt>-firmware.bin  — app-only (for OTA over WiFi)
-#   webflasher/bosefix32-<tgt>-littlefs.bin  — Web-UI image (for FS-OTA)
+#   webflasher/sixback-<tgt>-factory.bin   — merged bootloader+parts+app+fs
+#   webflasher/sixback-<tgt>-firmware.bin  — app-only (for OTA over WiFi)
+#   webflasher/sixback-<tgt>-littlefs.bin  — Web-UI image (for FS-OTA)
 # Plus:
 #   webflasher/manifest.json                 — esp-web-tools manifest with VERSION
 #
@@ -14,7 +14,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-PIO_BUILD="/root/pio-build/bosefix32"
+PIO_BUILD="/root/pio-build/bosefix32"   # Build-Dir keep (path on disk, not user-visible)
 OUT="$ROOT/webflasher"
 mkdir -p "$OUT"
 
@@ -35,7 +35,7 @@ mkdir -p "$OUT"
 
 # Resolve final version after both bumps (single source of truth in version.h).
 VERSION="$(grep -oE '"[0-9]+\.[0-9]+\.[0-9]+"' "$ROOT/src/version.h" | tr -d '"')"
-echo ">>> BoseFix32 release build, version=$VERSION"
+echo ">>> SixBack release build, version=$VERSION"
 
 # --- 2) Per-target merge into single factory image -----------------------
 ESPTOOL=( "$HOME/.platformio/penv/bin/pio" pkg exec --package "platformio/tool-esptoolpy" -- python -m esptool )
@@ -43,7 +43,7 @@ ESPTOOL=( "$HOME/.platformio/penv/bin/pio" pkg exec --package "platformio/tool-e
 merge_target() {
   local tgt="$1" chip="$2" fsize="$3" spiffs_off="$4" boot_off="$5"
   local src="$PIO_BUILD/$tgt"
-  local factory="$OUT/bosefix32-$tgt-factory.bin"
+  local factory="$OUT/sixback-$tgt-factory.bin"
 
   echo ">>> Merging $tgt ($chip, $fsize, boot@$boot_off, spiffs@$spiffs_off)"
   "${ESPTOOL[@]}" --chip "$chip" merge_bin \
@@ -54,8 +54,8 @@ merge_target() {
     0x10000       "$src/firmware.bin" \
     "$spiffs_off" "$src/littlefs.bin"
 
-  cp "$src/firmware.bin"  "$OUT/bosefix32-$tgt-firmware.bin"
-  cp "$src/littlefs.bin"  "$OUT/bosefix32-$tgt-littlefs.bin"
+  cp "$src/firmware.bin"  "$OUT/sixback-$tgt-firmware.bin"
+  cp "$src/littlefs.bin"  "$OUT/sixback-$tgt-littlefs.bin"
 }
 
 # bootloader offset:
@@ -76,7 +76,7 @@ merge_target c6    esp32c6 4MB  0x390000  0x0
 # --- 3) Generate esp-web-tools manifest with current version -------------
 cat > "$OUT/manifest.json" <<EOF
 {
-  "name": "BoseFix32",
+  "name": "SixBack",
   "version": "$VERSION",
   "funding_url": "https://github.com/tostmann/BoseFix32",
   "new_install_prompt_erase": true,
@@ -84,25 +84,25 @@ cat > "$OUT/manifest.json" <<EOF
     {
       "chipFamily": "ESP32",
       "parts": [
-        { "path": "bosefix32-esp32-factory.bin", "offset": 0 }
+        { "path": "sixback-esp32-factory.bin", "offset": 0 }
       ]
     },
     {
       "chipFamily": "ESP32-S3",
       "parts": [
-        { "path": "bosefix32-s3-factory.bin", "offset": 0 }
+        { "path": "sixback-s3-factory.bin", "offset": 0 }
       ]
     },
     {
       "chipFamily": "ESP32-C3",
       "parts": [
-        { "path": "bosefix32-c3-factory.bin", "offset": 0 }
+        { "path": "sixback-c3-factory.bin", "offset": 0 }
       ]
     },
     {
       "chipFamily": "ESP32-C6",
       "parts": [
-        { "path": "bosefix32-c6-factory.bin", "offset": 0 }
+        { "path": "sixback-c6-factory.bin", "offset": 0 }
       ]
     }
   ]
@@ -114,6 +114,6 @@ echo
 echo "=== Release artefacts (version $VERSION) ==="
 ls -lh "$OUT"/*.bin "$OUT"/manifest.json
 echo
-echo "Public landing page:  https://install.busware.de/bosefix/"
+echo "Public landing page:  https://install.busware.de/sixback/"
 echo "Deploy command (user triggers manually):"
-echo "  rsync -avr webflasher/ 10.10.22.1:/var/www/install/bosefix/"
+echo "  rsync -avr webflasher/ 10.10.22.1:/var/www/install/sixback/"

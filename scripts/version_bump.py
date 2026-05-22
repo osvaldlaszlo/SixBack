@@ -127,7 +127,7 @@ def main():
 #ifndef BOSEFIX32_VERSION_H
 #define BOSEFIX32_VERSION_H
 
-#define FW_NAME           "BoseFix32"
+#define FW_NAME           "SixBack"
 #define FW_VERSION_MAJOR  {major}
 #define FW_VERSION_MINOR  {minor}
 #define FW_VERSION_BUILD  {new_build}

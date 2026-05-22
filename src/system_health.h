@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// BoseFix32 — System-Health (Watchdogs, Crash-Counter, Self-Ping)
+// SixBack — System-Health (Watchdogs, Crash-Counter, Self-Ping)
 //
-// Pflicht in loop():  bosefix::healthTick()
-// Pflicht in setup(): bosefix::healthInit()
+// Pflicht in loop():  sixback::healthTick()
+// Pflicht in setup(): sixback::healthInit()
 //
 // Was es macht:
 //   - Liest beim Boot esp_reset_reason() + persistente Counter aus NVS
-//     (Namespace "bosefix-sys": boot_count, crash_count, wifi_reboots,
+//     (Namespace "sixback-sys": boot_count, crash_count, wifi_reboots,
 //      heap_reboots, last_reason, last_boot_ts).
 //   - Subscribed die Loop-Task am Task-Watchdog (Timeout HEALTH_TWDT_S),
 //     ruft esp_task_wdt_reset() in jedem tick().
@@ -18,14 +18,14 @@
 //     GET /info (Port 8090) an jeden bekannten Speaker. Bei Erfolg:
 //     lastSeenMs aktualisieren. Bei N Misses: status=OFFLINE.
 //
-// Health-Snapshot fuer /api/status: bosefix::healthToJson(JsonObject&).
+// Health-Snapshot fuer /api/status: sixback::healthToJson(JsonObject&).
 
 #ifndef BOSEFIX32_SYSTEM_HEALTH_H
 #define BOSEFIX32_SYSTEM_HEALTH_H
 
 #include <ArduinoJson.h>
 
-namespace bosefix {
+namespace sixback {
 
 // In setup() einmal aufrufen.
 void healthInit();
@@ -39,6 +39,6 @@ void healthToJson(JsonObject out);
 // Reset-Reason vom letzten Boot als kurzer Text ("POWERON","PANIC","WDT",...)
 const char* lastResetReasonStr();
 
-}  // namespace bosefix
+}  // namespace sixback
 
 #endif  // BOSEFIX32_SYSTEM_HEALTH_H

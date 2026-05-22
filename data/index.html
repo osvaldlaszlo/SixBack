@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>BoseFix32 — Control</title>
+<title>SixBack — Control</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
   :root {
@@ -55,6 +55,7 @@
   .pill.offline        { background: #f5d5d5; color: var(--bad); }
   .pill.unknown        { background: #e6e3da; color: var(--mute); }
   .pill.stale          { background: #f9e8b6; color: #7a5400; }
+  .pill.settling       { background: #f9e8b6; color: #7a5400; font-style: italic; }
 
   .actions { display: flex; gap: .35em; flex-wrap: wrap; margin-top: .5em; }
   /* Preset layout matches the speaker keypad: 2 rows × 3 columns (1-2-3 / 4-5-6) */
@@ -162,11 +163,12 @@
 <body>
 
 <div class="topbar">
-  <h1>BoseFix32</h1>
+  <img src="/assets/sixback-mark.png" alt="" style="height:1.7em; vertical-align:-.35em; margin-right:.35em">
+  <h1 style="display:inline">SixBack</h1>
   <div class="meta" id="status-meta">…</div>
 </div>
-<p class="subline">Local SoundTouch cloud replacement. Discover speakers on the LAN, migrate them, manage presets — all from this page. Source:
-  <a href="https://github.com/tostmann/BoseFix32" target="_blank" rel="noopener">github.com/tostmann/BoseFix32</a>.</p>
+<p class="subline">Bring your Six back — local SoundTouch cloud replacement. Discover speakers on the LAN, migrate them, manage presets — all from this page. Source:
+  <a href="https://github.com/tostmann/BoseFix32" target="_blank" rel="noopener">github.com/tostmann/BoseFix32</a> <em>(rename to SixBack pending)</em>.</p>
 
 <div class="automode-bar" id="automode-bar">
   <span class="label">Auto-Migrate at Boot:</span>
@@ -175,7 +177,7 @@
     <span class="slider"></span>
   </label>
   <span class="pill" id="am-pill">…</span>
-  <span class="detail" id="am-detail">loading…</span>
+  <span class="detail" id="am-detail"></span>
 </div>
 
 <div class="toolbar">
@@ -187,7 +189,7 @@
   <button class="danger" onclick="factoryResetWifi()">⚠ WiFi factory reset</button>
 </div>
 
-<div id="speakers-host">Loading…</div>
+<div id="speakers-host"></div>
 
 <div class="fwcard">
   <h2>⬆ Firmware update (OTA over WiFi)</h2>
@@ -200,7 +202,7 @@
   <div style="font-weight:600; margin:.4em 0 .3em;">Online update</div>
   <p class="hint" style="margin-top:0">
     The ESP fetches the matching firmware-image for its chip directly
-    from <a href="https://install.busware.de/bosefix/" target="_blank" rel="noopener">install.busware.de</a>
+    from <a href="https://install.busware.de/sixback/" target="_blank" rel="noopener">install.busware.de</a>
     — no local file needed.
   </p>
   <div class="fwmeta">
@@ -279,6 +281,12 @@
 <div class="modal" id="modal-preset">
   <div class="box">
     <h3 id="preset-title">Edit preset</h3>
+    <div id="preset-readonly-hint" style="display:none; padding:.6em; background:#fff4cf; border-left:3px solid #d4a000; margin-bottom:.6em; font-size:.85em">
+      <strong>Speaker-managed slot.</strong> This slot holds content (DLNA, Bluetooth, etc.)
+      that SixBack cannot replay. The speaker owns the data — editing here would overwrite
+      its cache on next cloud sync. You can only <em>delete</em> the slot, or re-record it
+      at the speaker via long-press on the preset button.
+    </div>
     <label>Source</label>
     <select id="p-source">
       <option value="TUNEIN">TuneIn (station ID)</option>
@@ -295,8 +303,8 @@
     <div class="row">
       <button onclick="closeModal('modal-preset')">Cancel</button>
       <button class="danger" onclick="deletePreset()">Delete</button>
-      <button onclick="savePreset(false)">Save in BoseFix32 only</button>
-      <button class="primary" onclick="savePreset(true)">Save &amp; write to speaker</button>
+      <button id="btn-save-only" onclick="savePreset(false)">Save in SixBack only</button>
+      <button id="btn-save-push" class="primary" onclick="savePreset(true)">Save &amp; write to speaker</button>
     </div>
   </div>
 </div>
@@ -327,7 +335,7 @@
     </p>
     <p style="margin:.5em 0 0;font-size:.8em;color:var(--mute);border-left:3px solid var(--accent);padding-left:.5em">
       Slots shown as <em>empty</em> in this UI (DLNA, Bluetooth, AUX) are
-      <strong>not actually empty on the speaker</strong> — BoseFix32 just can't replay
+      <strong>not actually empty on the speaker</strong> — SixBack just can't replay
       those source types yet. A fresh live capture reveals the real ContentItem
       so we can add support. Please share the JSON if you have unsupported
       presets.
@@ -736,17 +744,21 @@ async function loadSpeakers() {
 }
 
 // Status classification combines the Telnet probe (status, cloud_url) with the
-// ownedByUs flag. Backend status is only 'migrated' (anywhere) / 'not_migrated'
-// (= original Bose) / 'offline' / 'unknown'. The UI decides:
+// ownedByUs flag. Backend status is one of: 'migrated' (anywhere) / 'not_migrated'
+// (= original Bose) / 'offline' (Speaker komplett unreachable) / 'settling'
+// (Telnet down, BMX up — typisch transient während Cloud-Migration-Reboot) /
+// 'unknown'. Die UI entscheidet:
+//   status == settling     → settling… (kein Bug, nur "noch nicht eingespielt")
+//   status == offline      → offline (Speaker wirklich aus oder nicht erreichbar)
 //   owned_by_us == true  → it's ours
 //     cloud_url == myBase → migrated (fresh)
 //     cloud_url != myBase → migrated (URL stale — failsafe repairs on next boot)
 //   owned_by_us == false
 //     status == not_migrated → original Bose cloud
 //     status == migrated     → migrated to foreign server
-//     status == offline      → offline
 //     status == unknown      → unknown
 function classify(s, myBase) {
+  if (s.status === 'settling') return ['settling', 'settling…'];
   if (s.status === 'offline') return ['offline', 'offline'];
   if (s.owned_by_us) {
     if (s.cloud_url && s.cloud_url === myBase)
@@ -898,11 +910,17 @@ async function loadPresetsFor(devId) {
   try {
     let r = await api('/api/speaker/'+encodeURIComponent(devId)+'/presets');
     let presets = r.presets || [];
-    // Auto-import: if our ESP store has nothing yet but the speaker already has
-    // presets, pull them across ONCE. (Works for non-migrated speakers too,
-    // because the BMX API stays open regardless of cloud-URL config.)
-    const allEmpty = presets.every(p => !p.source || p.source === 'EMPTY');
-    if (allEmpty) {
+    // Auto-import: wenn der Store fuer einen Slot leer ist, der Speaker dort
+    // aber etwas hat, vom Speaker importieren. Vorher nur bei ALLE-Slots-leer
+    // — das verfehlte den Fall "5 TUNEIN im Store + Slot 6 DLNA nur am
+    // Speaker" (siehe Kueche 2026-05-21: Slot 6 wurde als "empty" angezeigt
+    // obwohl der DLNA-Preset im Speaker-Cache lag). import-from-device ist
+    // idempotent: setSlots() ueberschreibt mit Speaker-State, und der ist
+    // bei den TUNEIN-Slots identisch zum Store (vorausgesetzt vorheriger
+    // push-to-device war erfolgreich).
+    const anyEmpty = presets.some(p => !p.source || p.source === 'EMPTY');
+    const noPresets = presets.length === 0;
+    if (anyEmpty || noPresets) {
       try {
         const ir = await api('/api/speaker/'+encodeURIComponent(devId)+'/presets/import-from-device',
                               {method:'POST'});
@@ -1011,7 +1029,7 @@ async function downloadSnapshot(devId) {
   openModal('modal-snapshot');
 }
 
-const SNAPSHOT_UPLOAD_URL = 'https://install.busware.de/bosefix/snapshot';
+const SNAPSHOT_UPLOAD_URL = 'https://install.busware.de/sixback/snapshot';
 
 async function snapshotSend() {
   const devId = g_snapDev;
@@ -1124,7 +1142,7 @@ async function snapshotDownload() {
     const a = document.createElement('a');
     const ts = new Date().toISOString().replace(/[:.]/g,'-');
     a.href = URL.createObjectURL(blob);
-    a.download = 'bosefix-snapshot-'+devId+'-'+src+'-'+ts+'.json';
+    a.download = 'sixback-snapshot-'+devId+'-'+src+'-'+ts+'.json';
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(()=>URL.revokeObjectURL(a.href), 5000);
     toast('Snapshot downloaded', 'success');
@@ -1225,11 +1243,48 @@ function editPreset(devId, slot, current) {
   STATE.editing = {devId, slot};
   document.getElementById('preset-title').textContent =
     'Preset '+slot+' on speaker '+devId;
-  document.getElementById('p-source').value  = current.source && current.source !== 'EMPTY' ? current.source : 'TUNEIN';
-  document.getElementById('p-name').value    = current.name      || '';
-  document.getElementById('p-station').value = current.stationId || '';
-  document.getElementById('p-url').value     = current.streamUrl || '';
-  document.getElementById('p-img').value     = current.imageUrl  || '';
+  const isOpaque = (current.source === 'OPAQUE');
+  const sourceEl  = document.getElementById('p-source');
+  const nameEl    = document.getElementById('p-name');
+  const stationEl = document.getElementById('p-station');
+  const urlEl     = document.getElementById('p-url');
+  const imgEl     = document.getElementById('p-img');
+
+  // OPAQUE-Slots (DLNA, Bluetooth, andere am Speaker gespeicherte Quellen die
+  // SixBack nicht selbst replayen kann): Read-only-Modus. Save mit TUNEIN/etc
+  // wuerde den Slot am Speaker beim naechsten /full-Pull zerstoeren, daher
+  // alle Edit-Felder sperren. Nur Delete bleibt aktiv — der User kann den
+  // Slot bewusst leeren, oder ueber die Speaker-eigene Long-Press-Geste neu
+  // belegen.
+  if (isOpaque) {
+    sourceEl.value  = 'TUNEIN';   // dummy, disabled
+    nameEl.value    = current.name || ('['+(current.opaqueSourceName||'opaque')+'] preset');
+    stationEl.value = '(Speaker-cached: '+(current.opaqueSourceName||'?')+')';
+    urlEl.value     = '(Speaker-managed, not editable here)';
+    imgEl.value     = '';
+    sourceEl.disabled = true;
+    nameEl.disabled = true;
+    stationEl.disabled = true;
+    urlEl.disabled = true;
+    imgEl.disabled = true;
+    document.getElementById('btn-save-only').disabled = true;
+    document.getElementById('btn-save-push').disabled = true;
+    document.getElementById('preset-readonly-hint').style.display = '';
+  } else {
+    sourceEl.value  = current.source && current.source !== 'EMPTY' ? current.source : 'TUNEIN';
+    nameEl.value    = current.name      || '';
+    stationEl.value = current.stationId || '';
+    urlEl.value     = current.streamUrl || '';
+    imgEl.value     = current.imageUrl  || '';
+    sourceEl.disabled = false;
+    nameEl.disabled = false;
+    stationEl.disabled = false;
+    urlEl.disabled = false;
+    imgEl.disabled = false;
+    document.getElementById('btn-save-only').disabled = false;
+    document.getElementById('btn-save-push').disabled = false;
+    document.getElementById('preset-readonly-hint').style.display = 'none';
+  }
   openModal('modal-preset');
 }
 
@@ -1248,7 +1303,7 @@ async function savePreset(pushToDevice) {
       method:'PUT', headers:{'Content-Type':'application/json'},
       body: JSON.stringify(body)});
     if (pushToDevice) {
-      toast('Saved in ESP — now writing to speaker (~10s, brief audio)…');
+      toast('Saved in ESP — now writing to speaker (~90s, brief audio + Bose-Reboot)…');
       try {
         await api(`/api/speaker/${devId}/preset/${slot}/push-to-device`, {method:'POST'});
         toast('Preset also saved on speaker', 'success');

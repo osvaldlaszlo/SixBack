@@ -3,11 +3,11 @@
 #include "nvs_helper.h"
 #include "speaker_inventory.h"
 
-namespace bosefix {
+namespace sixback {
 
 namespace {
 
-constexpr const char* NVS_NS  = "bosefix-pre";
+constexpr const char* NVS_NS  = "sixback-pre";
 constexpr const char* NVS_KEY = "presets";
 
 // Escaped fuer XML-Text-Inhalt UND fuer doppelt-gequotete Attribute-Werte.
@@ -363,4 +363,4 @@ String PresetStore::toBoseXml(const String& deviceId) {
     return out;
 }
 
-} // namespace bosefix
+} // namespace sixback

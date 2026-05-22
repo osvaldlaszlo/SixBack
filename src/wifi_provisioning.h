@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// BoseFix32 — WiFi-Provisionierung via Improv + Captive-Portal
+// SixBack — WiFi-Provisionierung via Improv + Captive-Portal
 // (Schwester-Pattern aus ip4knx / TUL KNX-Gateway).
 //
 // Beim Boot:
@@ -14,7 +14,7 @@
 //   3. WiFi up → return; Improv laeuft im Hintergrund (via wifiProvisioningTick)
 //      bis zum Idle-Window-Ablauf weiter. So kann der User jederzeit nach
 //      Boot neue WLAN-Credentials einspeisen (Router-Wechsel etc.).
-//   4. Kein NVS-Connect → Captive-Portal (offener AP "BoseFix32-XXYYZZ" +
+//   4. Kein NVS-Connect → Captive-Portal (offener AP "SixBack-XXYYZZ" +
 //      DNS-Hijack + HTTP-Form) parallel zu Improv arm-en. Sobald eine
 //      Quelle erfolgreich provisioniert → connected.
 //   5. Beide Fenster zu ohne Connect → Restart nach 10 s.
@@ -28,7 +28,7 @@
 
 #include <Arduino.h>
 
-namespace bosefix {
+namespace sixback {
 
 // Startet die Provisionierungs-Pipeline. Blockiert bis WiFi connected ist
 // (entweder aus NVS oder via Improv). Bei harten Fehlern -> Restart nach 10 s.
@@ -59,6 +59,6 @@ void persistCreds(const String& ssid, const String& psk);
 // erreichen koennen, sonst gibt's gefuehlte Hangs am Speaker.
 void wifiOptimizeForReliability();
 
-} // namespace bosefix
+} // namespace sixback
 
 #endif // BOSEFIX32_WIFI_PROVISIONING_H

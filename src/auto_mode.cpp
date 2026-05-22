@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// BoseFix32 — Auto-Mode (Zero-Touch Migration + Preset-Restore)
+// SixBack — Auto-Mode (Zero-Touch Migration + Preset-Restore)
 
 #include "auto_mode.h"
 #include "config.h"
@@ -17,11 +17,11 @@
 #include <freertos/semphr.h>
 #include <freertos/task.h>
 
-namespace bosefix {
+namespace sixback {
 
 namespace {
 
-constexpr const char* NVS_NS  = "bosefix-auto";
+constexpr const char* NVS_NS  = "sixback-auto";
 constexpr const char* NVS_KEY = "config";
 
 AutoModeStatus    g_status;
@@ -126,6 +126,22 @@ bool importAndNormalizePresets_(const Speaker& s,
             ++abandoned;
         } else {
             if (nr.status == NormalizeStatus::OK_CONVERTED) ++converted;
+            if (nr.status == NormalizeStatus::OK_OPAQUE) {
+                // OPAQUE-Slot: vollstaendiges <ContentItem>...</ContentItem>
+                // muss raw mitkopiert werden, sonst kann handleAccountFull
+                // den Slot beim Sync nicht rekonstruieren und skipt ihn
+                // silent (locStart < 0 → continue). Identisch zu
+                // api_endpoints.cpp::importPresetsFromSpeaker_ — diverging
+                // Copy hier nachgezogen 2026-05-22 Pre-Release-Test.
+                int ciOpen  = xml.indexOf("<ContentItem", idEnd);
+                int ciClose = xml.indexOf("</ContentItem>", ciOpen);
+                if (ciOpen >= 0 && ciOpen < presetClose && ciClose > ciOpen) {
+                    p.rawContentItem = xml.substring(ciOpen, ciClose + 14);
+                }
+                if (p.name.length() == 0) {
+                    p.name = String("[") + src + String("] preset");
+                }
+            }
             toSet.push_back(p);
         }
         pos = presetClose;
@@ -197,7 +213,17 @@ void migrateOne_(const Speaker& snap) {
                   snap.name.c_str(), snap.deviceId.c_str(), snap.ip.c_str());
 
     setState_("pre-migrate-snapshot");
-    bosefix::persistPreMigrateSnapshot(snap.deviceId, /*force=*/false);
+    sixback::persistPreMigrateSnapshot(snap.deviceId, /*force=*/false);
+
+    // /listMediaServers vom Speaker pullen, damit handleAccountFull spaeter
+    // die uuidToSrcId-Map fuer STORED_MUSIC-Presets aufbauen kann. Ohne diesen
+    // Pre-Migrate-Call ist `mediaServerUuids` leer und alle STORED_MUSIC-Slots
+    // werden in handleAccountFull silent geskipt (continue auf uuidToSrcId.end())
+    // → Speaker bekommt nur die TUNEIN-Slots zurueck und droppt seine
+    // DLNA-Presets lokal. Reproduziert 2026-05-22 Pre-Release-Test Iter1-A
+    // mit Emma + Kueche (Slot 6 = MiniDLNA "All Music" → ueberlebt nicht).
+    // Identisch zur manuellen migrate-Path (api_endpoints.cpp:370).
+    SpeakerInventory::instance().refreshMediaServers(snap.deviceId);
 
     setState_("import-presets");
     int converted = 0, abandoned = 0, total = 0;
@@ -434,4 +460,4 @@ AutoModeStatus getAutoModeStatus() {
     return snap;
 }
 
-} // namespace bosefix
+} // namespace sixback

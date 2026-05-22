@@ -9,11 +9,11 @@
 #include <algorithm>
 #include <esp_log.h>
 
-namespace bosefix {
+namespace sixback {
 
 namespace {
 
-constexpr const char* NVS_NS  = "bosefix-inv";
+constexpr const char* NVS_NS  = "sixback-inv";
 constexpr const char* NVS_KEY = "speakers";
 
 // Hilfs-Regex-frei: einfaches String-extract zwischen <tag> und </tag>
@@ -80,6 +80,7 @@ const char* migrationStatusToStr(MigrationStatus s) {
         case MigrationStatus::NOT_MIGRATED:   return "not_migrated";
         case MigrationStatus::MIGRATED:       return "migrated";
         case MigrationStatus::OFFLINE:        return "offline";
+        case MigrationStatus::SETTLING:       return "settling";
         default:                              return "unknown";
     }
 }
@@ -118,6 +119,11 @@ void SpeakerInventory::loadFromNVS() {
         s.ownedByUs  = o["ownedByUs"] | false;
         s.lastSeenMs = 0;  // resetten nach reboot
         s.groupId    = (const char*)(o["groupId"] | "");
+        if (o["mediaServerUuids"].is<JsonArray>()) {
+            for (JsonVariant v : o["mediaServerUuids"].as<JsonArray>()) {
+                s.mediaServerUuids.emplace_back((const char*)v);
+            }
+        }
         speakers_.push_back(s);
     }
     Serial.printf("[inv] loaded %u speakers from NVS\n",
@@ -140,6 +146,10 @@ void SpeakerInventory::saveToNVS() {
         o["cloudUrl"]  = s.cloudUrl;
         o["ownedByUs"] = s.ownedByUs;
         o["groupId"]   = s.groupId;
+        if (!s.mediaServerUuids.empty()) {
+            JsonArray msa = o["mediaServerUuids"].to<JsonArray>();
+            for (const auto& uuid : s.mediaServerUuids) msa.add(uuid);
+        }
     }
     nvsSaveJson(NVS_NS, NVS_KEY, doc);
 }
@@ -402,6 +412,21 @@ MigrationStatus SpeakerInventory::detectStatus(const String& ip, const String& m
     WiFiClient c;
     c.setTimeout(3);
     if (!c.connect(ip.c_str(), BOSE_TELNET_PORT, 3000)) {
+        // Telnet (Diag-Shell auf Port 17000) ist transient unreachable z.B.
+        // waehrend Cloud-Migration-Reboot oder hoher Speaker-Belastung. Vor
+        // OFFLINE-Verdikt pruefen ob die BMX-API (Port 8090) noch antwortet —
+        // wenn ja, lebt der Speaker, nur die Diag-Shell ist gerade nicht da.
+        // → SETTLING statt OFFLINE, damit das UI keinen falschen "Speaker ist
+        // aus"-Alarm wirft. Slot/Cloud-URL bleibt unbekannt bis Telnet wieder
+        // antwortet.
+        HTTPClient http;
+        String bmxUrl = "http://" + ip + ":" + String(BOSE_HTTP_PORT) + "/info";
+        if (http.begin(bmxUrl)) {
+            http.setTimeout(2000);
+            int code = http.GET();
+            http.end();
+            if (code == 200) return MigrationStatus::SETTLING;
+        }
         return MigrationStatus::OFFLINE;
     }
     delay(200);
@@ -533,7 +558,36 @@ bool SpeakerInventory::addByIp(const String& ip, ProbeFailure* failOut) {
     // kann ein paar Sekunden brauchen bis er antwortet.
     constexpr uint16_t MANUAL_CONNECT_MS = 2500;
     constexpr uint16_t MANUAL_READ_MS    = 5000;
-    if (!probeIp_(ip, s, MANUAL_CONNECT_MS, MANUAL_READ_MS, failOut)) return false;
+    if (!probeIp_(ip, s, MANUAL_CONNECT_MS, MANUAL_READ_MS, failOut)) {
+        // ARP-Race-Retry (2026-05-21, fix fuer fred_feuerstein P0b-Bug):
+        // Direkt nach SixBack-Boot kennt der Speaker den SixBack-MAC
+        // noch nicht. Sein ARP-Request kommt zwar bei SixBack an, aber
+        // der ARP-Reply kann im FRITZ!Mesh die Topologie nicht ueberwinden
+        // (Layer-2-Race / Repeater-Forwarding-Stutter). Symptom: TCP-SYN
+        // von SixBack zu Speaker geht durch, Speaker will antworten,
+        // aber sein SYN-ACK kommt nicht zurueck weil ARP-Cache fuer
+        // SixBack leer + ARP-Reply kommt nicht an. Timeout nach
+        // connect-Timeout (~2500ms).
+        //
+        // Fix: wenn der Probe wegen TIMEOUT (nicht REFUSED) failed,
+        // einmal 3s warten und nochmal mit laengeren Timeouts versuchen.
+        // Inzwischen hat die Mesh-Layer-2-Topology Zeit sich einzu-
+        // pendeln + die ARP-Caches sich gegenseitig zu lernen.
+        // Siehe [[reference-bosefix32-p0b-arp-race]] fuer tcpdump-Beweis.
+        if (failOut && failOut->reason == ProbeFailReason::CONNECT_FAILED &&
+            failOut->detail.indexOf("elapsed=2") >= 0) {
+            Serial.printf("[probe] %s ARP-race suspected (timeout @ %ums), "
+                          "retry in 3s with longer timeouts\n",
+                          ip.c_str(), MANUAL_CONNECT_MS);
+            delay(3000);
+            if (!probeIp_(ip, s, /*connectMs=*/5000, /*readMs=*/10000, failOut)) {
+                return false;
+            }
+            Serial.printf("[probe] %s recovered after ARP-race retry\n", ip.c_str());
+        } else {
+            return false;
+        }
+    }
     String myBase = "http://" + WiFi.localIP().toString() + ":" + String(BOSE_HTTP_PORT);
     // detectStatus ist Telnet — bewusst OHNE Lock; danach unter Lock mergen.
     String cloudUrl;
@@ -546,6 +600,62 @@ bool SpeakerInventory::addByIp(const String& ip, ProbeFailure* failOut) {
     }
     saveToNVS();
     return true;
+}
+
+// Holt `/listMediaServers` vom Speaker und persistiert die UUIDs in
+// Speaker::mediaServerUuids. Schweigend bei Fehler (Speaker offline,
+// keine DLNA-Server im LAN, etc.) — die Liste bleibt dann einfach leer.
+void SpeakerInventory::refreshMediaServers(const String& deviceId) {
+    String ip;
+    {
+        LockGuard g(*this);
+        Speaker* p = findById(deviceId);
+        if (!p) return;
+        ip = p->ip;
+    }
+    if (ip.length() == 0) return;
+
+    HTTPClient http;
+    http.setReuse(false);
+    http.setConnectTimeout(1500);
+    http.setTimeout(3000);
+    String url = "http://" + ip + ":" + String(BOSE_BMX_PORT) + "/listMediaServers";
+    if (!http.begin(url)) return;
+    int code = http.GET();
+    if (code != 200) { http.end(); return; }
+    String xml = http.getString();
+    http.end();
+
+    // Extrahiere alle id="UUID"-Attribute aus <media_server>-Elementen.
+    // listMediaServers liefert UUIDs ohne "uuid:"-Prefix — z.B. id="fa095ecc-...".
+    std::vector<String> uuids;
+    int pos = 0;
+    while (true) {
+        int msStart = xml.indexOf("<media_server", pos);
+        if (msStart < 0) break;
+        int msEnd = xml.indexOf("/>", msStart);
+        if (msEnd < 0) msEnd = xml.indexOf(">", msStart);
+        if (msEnd < 0) break;
+        String chunk = xml.substring(msStart, msEnd);
+        int idIdx = chunk.indexOf("id=\"");
+        if (idIdx > 0) {
+            idIdx += 4;
+            int idEnd = chunk.indexOf('"', idIdx);
+            if (idEnd > idIdx) {
+                String u = chunk.substring(idIdx, idEnd);
+                if (u.length() > 0) uuids.push_back(u);
+            }
+        }
+        pos = msEnd + 1;
+    }
+
+    LockGuard g(*this);
+    if (Speaker* p = findById(deviceId)) {
+        p->mediaServerUuids = uuids;
+        Serial.printf("[inv][ms] %s -> %u DLNA-server UUIDs cached\n",
+                      deviceId.c_str(), (unsigned)uuids.size());
+    }
+    saveToNVS();
 }
 
 bool SpeakerInventory::remove(const String& deviceId) {
@@ -581,4 +691,4 @@ std::vector<Speaker> SpeakerInventory::list() {
     return speakers_;
 }
 
-} // namespace bosefix
+} // namespace sixback

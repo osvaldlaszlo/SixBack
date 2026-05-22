@@ -38,3 +38,5 @@ datasheet/
 docs/
 compile_commands.json
 webflasher/manifest.json
+._*
+.DS_Store

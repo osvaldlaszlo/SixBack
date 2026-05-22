@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// BoseFix32 — Event-Store fuer SCMUDC-Telemetrie (P2)
+// SixBack — Event-Store fuer SCMUDC-Telemetrie (P2)
 //
 // Speaker POSTen jede UI-/Playback-Zustandsaenderung als JSON an
 // `POST /v1/scmudc/{deviceId}` (Bose-interner "stats" / scmudc-Stream).
@@ -19,7 +19,7 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 
-namespace bosefix {
+namespace sixback {
 
 void eventStoreInit();
 
@@ -50,6 +50,6 @@ struct EventStoreStats {
 };
 EventStoreStats eventStoreStats();
 
-} // namespace bosefix
+} // namespace sixback
 
 #endif // BOSEFIX32_EVENT_STORE_H

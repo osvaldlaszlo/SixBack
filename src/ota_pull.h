@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// BoseFix32 — Online-Update (HTTPS-Pull von install.busware.de)
+// SixBack — Online-Update (HTTPS-Pull von install.busware.de)
 //
 // Im Geist von tul-knx-gateway: das Webfrontend triggert
 // /api/update/check und /api/update/install; der ESP zieht manifest.json
@@ -15,7 +15,7 @@
 
 #include <Arduino.h>
 
-namespace bosefix {
+namespace sixback {
 namespace ota {
 
 enum class State : uint8_t {
@@ -61,6 +61,6 @@ bool installOnlineForceAsync();
 void init(const String& myVersion);
 
 } // namespace ota
-} // namespace bosefix
+} // namespace sixback
 
 #endif

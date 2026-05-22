@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// BoseFix32 — Zero-Touch Auto-Migration
+// SixBack — Zero-Touch Auto-Migration
 //
 // Wenn aktiviert (NVS-Flag), laeuft beim Boot eine Pipeline:
 //   1. Wait bootDelayMs nach WiFi-Connect, damit Server up sind.
@@ -20,7 +20,7 @@
 
 #include <Arduino.h>
 
-namespace bosefix {
+namespace sixback {
 
 struct AutoModeConfig {
     bool      enabled       = true;   // Image-Default an: flash → provision → migrate zero-touch
@@ -70,6 +70,6 @@ void           startAutoModeTask();
 // Snapshot fuer /api/auto-mode.
 AutoModeStatus getAutoModeStatus();
 
-} // namespace bosefix
+} // namespace sixback
 
 #endif

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// BoseFix32 — WiFi-Provisionierung
+// SixBack — WiFi-Provisionierung
 
 #include "wifi_provisioning.h"
 #include "captive_portal.h"
@@ -9,11 +9,11 @@
 #include "ImprovWiFiLibrary.h"
 #include <esp_wifi.h>
 
-namespace bosefix {
+namespace sixback {
 
 namespace {
 
-constexpr const char* NVS_NS    = "bosefix-wifi";
+constexpr const char* NVS_NS    = "sixback-wifi";
 constexpr const char* KEY_SSID  = "ssid";
 constexpr const char* KEY_PSK   = "psk";
 
@@ -30,11 +30,25 @@ uint32_t    improvStartMs         = 0;
 uint32_t    improvLastActivityMs  = 0;
 uint32_t    improvIdleMs          = IMPROV_IDLE_FRESH;
 
+// 2026-05-21 22:50 — gratuitous-ARP-Versuch via etharp_gratuitous() hat
+// C6 in einen Reboot-Loop gestuerzt (lwIP-Stack-Frames im PanicHandler).
+// Vermutlich weil esp_netif_get_netif_impl() bei direkt-nach-Connect-Aufruf
+// nicht voll initialisiert ist, oder der lwIP-Netif-Lock falsch gehalten
+// wird. Code entfernt — Retry-on-ARP-Race in addByIp (speaker_inventory.cpp)
+// reicht als Fix fuer P0b. Wenn das nicht hilft, alternative Wege:
+//  - esp_event-Listener auf IP_EVENT_STA_GOT_IP + send_gratuitous_arp_request
+//    via raw socket (per Hand, ohne lwIP-Direktzugriff)
+//  - UDP-broadcast auf Port 6 ohne payload — Switches lernen die MAC trotzdem
+void sendGratuitousArpBroadcast() {
+    // intentionally no-op for now — siehe Kommentar oben.
+}
+
 void onImprovConnected(const char* ssid, const char* pw) {
     Serial.printf("[improv] connected -> ssid=%s\n", ssid);
     persistCreds(ssid ? ssid : "", pw ? pw : "");
     improvActive = false;
     wifiOptimizeForReliability();   // Power-Save aus, sobald STA up ist
+    sendGratuitousArpBroadcast();   // Mesh-ARP-Race-Mitigation (P0b)
 }
 
 void onImprovError(ImprovTypes::Error err) {
@@ -66,6 +80,7 @@ bool tryConnectFromNVS() {
     if (WiFi.status() == WL_CONNECTED) {
         Serial.printf("[wifi] connected, IP=%s\n", WiFi.localIP().toString().c_str());
         wifiOptimizeForReliability();
+        sendGratuitousArpBroadcast();
         improvLastActivityMs = millis();
         Serial.printf("[improv] reset window after AP connect — improvLastActivityMs=%lu improvActive=%d\n",
                       (unsigned long)improvLastActivityMs, (int)improvActive);
@@ -120,7 +135,7 @@ void startImprovMode() {
     // (WIFI_PS_MIN_MODEM, DTIM-basiert) kappen sonst das 4-way-
     // handshake-Timing → reproduzierbarer 4WAY_HANDSHAKE_TIMEOUT auf
     // WPA2-Mixed-APs. EULFW32 / ip4knx setzen das gleiche vor begin();
-    // BoseFix32 hat es bis v0.5.450 erst NACH Connect via
+    // SixBack hat es bis v0.5.450 erst NACH Connect via
     // wifiOptimizeForReliability() gesetzt — zu spaet wenn der Connect
     // selbst schon scheitert.
     WiFi.setSleep(WIFI_PS_NONE);
@@ -144,7 +159,7 @@ void startImprovMode() {
         cf,
         FW_NAME,
         FW_VERSION_STRING,
-        "BoseFix32"
+        "SixBack"
     );
     improvSerial.onImprovConnected(onImprovConnected);
     improvSerial.onImprovError(onImprovError);
@@ -185,10 +200,37 @@ void provisionWifi() {
         return;
     }
 
-    // Kein Connect aus NVS (oder keine Creds vorhanden) — Improv (laeuft
-    // schon) und Captive-Portal parallel arm-en. Sobald eine Quelle
-    // erfolgreich provisioniert, ist WiFi.status() == WL_CONNECTED und
-    // wir brechen aus, schliessen beide Fenster.
+    // Kein Connect aus NVS (oder keine Creds vorhanden).
+    //
+    // 2026-05-22: ESP32-C6 zeigt einen reproduzierbaren AP-STA-Konflikt
+    // wenn captive softAP gleichzeitig mit improv-WiFi.begin() laeuft —
+    // WiFi 6 PHY auf C6 toleriert die Radio-Teilung schlechter als
+    // S3/Classic. Symptom: improv liefert "Unable to connect to WiFi",
+    // ARP-Resolve auf softAP-Gateway scheitert.
+    // Mitigation: improv kriegt 10s exklusive Radio-Zeit. Nur wenn dort
+    // nichts ankommt, oeffnet captive als 2.-Pfad.
+    constexpr uint32_t IMPROV_EXCLUSIVE_MS = 10 * 1000;
+    const uint32_t improvOnlyStart = millis();
+    Serial.println("[provision] improv-exclusive window 10s (no captive yet)");
+    while (millis() - improvOnlyStart < IMPROV_EXCLUSIVE_MS && improvActive) {
+        improvTickInternal();
+        if (WiFi.status() == WL_CONNECTED) {
+            Serial.println("[provision] improv-exclusive: STA up — done");
+            return;
+        }
+        delay(10);
+    }
+    // Post-loop re-check: onImprovConnected setzt improvActive=false NACHDEM
+    // WiFi.begin() bereits WL_CONNECTED gemeldet hat. Die Loop-Bedingung
+    // sieht improvActive=false und exit'd, OHNE die WL_CONNECTED-Pruefung
+    // im Loop-Body ein letztes Mal zu durchlaufen. Wenn wir hier nicht
+    // re-checken, oeffnen wir captive ueber einer aktiven STA — softAP
+    // belegt port 80, captiveStop()->end() haelt das port-80-binding noch
+    // ein paar Sekunden in TIME_WAIT, uiServer.begin() schlaegt fehl.
+    if (WiFi.status() == WL_CONNECTED) {
+        Serial.println("[provision] improv-exclusive: STA up at loop-exit — skipping captive");
+        return;
+    }
     captiveStart();
 
     Serial.println("[provision] no NVS connect — waiting on improv OR captive");
@@ -200,6 +242,7 @@ void provisionWifi() {
         if (WiFi.status() == WL_CONNECTED && connectedAtMs == 0) {
             connectedAtMs = millis();
             improvLastActivityMs = connectedAtMs;
+            sendGratuitousArpBroadcast();   // P0b: Mesh-ARP-Cache priming
             Serial.println("[provision] STA up — keeping captive alive for 15s grace "
                            "(browser still polling /save_status)");
         }
@@ -275,4 +318,4 @@ void wifiOptimizeForReliability() {
                   (unsigned long)getCpuFrequencyMhz());
 }
 
-} // namespace bosefix
+} // namespace sixback

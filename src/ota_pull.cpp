@@ -12,7 +12,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 
-namespace bosefix {
+namespace sixback {
 namespace ota {
 
 namespace {
@@ -21,22 +21,22 @@ namespace {
 // bekannt; absichtlich hardcoded statt konfigurierbar, weil das die
 // einzige Distributionsquelle ist (vgl. reference_busware_install_host).
 constexpr const char* kManifestUrl =
-    "https://install.busware.de/bosefix/manifest.json";
+    "https://install.busware.de/sixback/manifest.json";
 
 // Chip-spezifischer Datei-Name fuer firmware.bin oder littlefs.bin.
 // build_release.sh erzeugt:
-//   bosefix32-<tgt>-firmware.bin
-//   bosefix32-<tgt>-littlefs.bin
+//   sixback-<tgt>-firmware.bin
+//   sixback-<tgt>-littlefs.bin
 // wobei <tgt> einer der platformio-envs ist (esp32, s3, c3, c6).
 const char* chipPrefix_() {
 #if   CONFIG_IDF_TARGET_ESP32S3
-    return "bosefix32-s3-";
+    return "sixback-s3-";
 #elif CONFIG_IDF_TARGET_ESP32C6
-    return "bosefix32-c6-";
+    return "sixback-c6-";
 #elif CONFIG_IDF_TARGET_ESP32C3
-    return "bosefix32-c3-";
+    return "sixback-c3-";
 #elif CONFIG_IDF_TARGET_ESP32
-    return "bosefix32-esp32-";
+    return "sixback-esp32-";
 #else
     return nullptr;  // unbekannte Plattform — Install verweigern
 #endif
@@ -147,7 +147,7 @@ void doCheck_() {
 // Return true on success.
 bool pullAndFlashOne_(const char* path, int updateType,
                       const char* phaseName, uint8_t phaseIdx) {
-    String url = "https://install.busware.de/bosefix/";
+    String url = "https://install.busware.de/sixback/";
     url += path;
     Serial.printf("[ota-pull] phase %d/%u start: %s -> %s\n",
                   phaseIdx, (unsigned)g_status.phaseN, url.c_str(),
@@ -177,13 +177,23 @@ bool pullAndFlashOne_(const char* path, int updateType,
         setError_(msg);
         return false;
     }
-    int total = http.getSize();
-    if (total <= 0) total = UPDATE_SIZE_UNKNOWN;
+    int contentLen = http.getSize();
+    // 2026-05-22 Pre-Release: empirisch sieht WiFiClientSecure-HTTPClient auf
+    // C6 + S3 fuer einzelne .bin-Downloads ein Content-Length kleiner als
+    // die Apache-tatsaechlich-Antwort (z.B. C6-firmware.bin: file=1822160 B,
+    // ESP sah total=1797920 B = 24 KB short). Loop exit'd bei written>=total,
+    // Update.end commit'te truncated Image → boot-image-magic-fail →
+    // Rollback → device-brick. UPDATE_SIZE_UNKNOWN umgeht das: Stream bis
+    // EOF/disconnect, Update finalisiert was tatsaechlich kam, partition-
+    // boundary-check macht Update.cpp selbst.
+    int total = UPDATE_SIZE_UNKNOWN;
 
     lock_();
-    g_status.total = (total == (int)UPDATE_SIZE_UNKNOWN) ? 0 : (uint32_t)total;
+    g_status.total = (contentLen > 0) ? (uint32_t)contentLen : 0;
     unlock_();
-    Serial.printf("[ota-pull] phase %d GET 200, total=%d\n", phaseIdx, total);
+    Serial.printf("[ota-pull] phase %d GET 200, ContentLength=%d "
+                  "(using UPDATE_SIZE_UNKNOWN for write)\n",
+                  phaseIdx, contentLen);
 
     // FS muss vor U_SPIFFS-Write unmountet werden, sonst sehen wir die
     // alten Daten vom alten Mount + Heap-Pressure.
@@ -215,10 +225,18 @@ bool pullAndFlashOne_(const char* path, int updateType,
 
     uint32_t written = 0;
     uint32_t lastReport = millis();
-    while (http.connected() && (total <= 0 || (int)written < total)) {
+    uint32_t lastDataMs = millis();
+    // Read until connection closes OR no new bytes for 5s (idle-timeout).
+    // Pre-Release-fix: NICHT auf written>=total brechen — total ist
+    // (auf ESP HTTPS) unzuverlaessig.
+    while (http.connected()) {
         size_t avail = stream->available();
         if (avail == 0) {
-            if (!http.connected()) break;
+            if (millis() - lastDataMs > 5000) {
+                Serial.printf("[ota-pull] phase %d idle >5s — assume EOF at %u bytes\n",
+                              phaseIdx, (unsigned)written);
+                break;
+            }
             delay(5);
             continue;
         }
@@ -232,6 +250,7 @@ bool pullAndFlashOne_(const char* path, int updateType,
             return false;
         }
         written += got;
+        lastDataMs = millis();
         if (millis() - lastReport > 500) {
             lock_();
             g_status.progress = written;
@@ -243,6 +262,20 @@ bool pullAndFlashOne_(const char* path, int updateType,
     free(buf);
     http.end();
 
+    // Wenn die HTTP-Antwort eine vernuenftig wirkende Content-Length hatte,
+    // muss `written` auch nahe dran sein. Wenn deutlich kleiner (z.B. < 90 %),
+    // war der Download offensichtlich abgebrochen → Update.end mit abort
+    // statt commit, damit wir NICHT auf eine truncated Image-Partition
+    // umschalten (= brick + rollback).
+    if (contentLen > 0 && written < (uint32_t)(contentLen * 9 / 10)) {
+        Serial.printf("[ota-pull] phase %d ABORT: only %u/%d bytes\n",
+                      phaseIdx, (unsigned)written, contentLen);
+        Update.abort();
+        setError_(String(phaseName) + ": truncated download (" +
+                  String(written) + "/" + String(contentLen) + ")");
+        return false;
+    }
+
     if (!Update.end(true)) {
         setError_(String(phaseName) + ": Update.end: " + Update.errorString());
         return false;
@@ -251,14 +284,15 @@ bool pullAndFlashOne_(const char* path, int updateType,
     g_status.progress = written;
     if (g_status.total == 0) g_status.total = written;
     unlock_();
-    Serial.printf("[ota-pull] phase %d DONE, %u bytes written.\n",
-                  phaseIdx, (unsigned)written);
+    Serial.printf("[ota-pull] phase %d DONE, %u bytes written "
+                  "(announced %d).\n",
+                  phaseIdx, (unsigned)written, contentLen);
     return true;
 }
 
 // Background-Task: Online-Install in 2 Phasen (FS + FW).
-//   Phase 1: bosefix32-<chip>-littlefs.bin -> U_SPIFFS (~384 KB)
-//   Phase 2: bosefix32-<chip>-firmware.bin -> U_FLASH  (~1.7 MB)
+//   Phase 1: sixback-<chip>-littlefs.bin -> U_SPIFFS (~384 KB)
+//   Phase 2: sixback-<chip>-firmware.bin -> U_FLASH  (~1.7 MB)
 //   -> ESP.restart()
 // Reihenfolge: FS zuerst damit die NEUE UI nach Reboot sofort verfuegbar
 // ist. Wenn FW-Flash fail (Update.end-Fehler), bleibt der Speaker auf
@@ -361,4 +395,4 @@ void init(const String& myVersion) {
 }
 
 }  // namespace ota
-}  // namespace bosefix
+}  // namespace sixback

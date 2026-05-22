@@ -2,9 +2,9 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>BoseFix32 — Web Flasher</title>
+<title>SixBack — Web Flasher</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="description" content="One-click ESP32 flasher for BoseFix32 — local SoundTouch cloud replacement.">
+<meta name="description" content="One-click ESP32 flasher for SixBack — local SoundTouch cloud replacement (formerly BoseFix32).">
 <style>
   :root {
     --bg:#f7f6f3; --card:#fff; --ink:#222; --mute:#777;
@@ -45,14 +45,14 @@
 <body>
 
 <div class="hero">
-  <img src="images/bosefix32-title.svg" alt="BoseFix32" width="640">
-  <h1>BoseFix32 — Web Flasher</h1>
+  <img src="images/sixback-logo.png" alt="SixBack" width="320">
+  <h1>SixBack — Web Flasher</h1>
   <p style="color:var(--mute)">Local SoundTouch cloud replacement on an ESP32 stick.<br>
      Bose shut their cloud down — this brings the preset buttons back.</p>
 </div>
 
 <div class="panel flash">
-  <h2 style="margin-top:0">Install BoseFix32 on your ESP32</h2>
+  <h2 style="margin-top:0">Install SixBack on your ESP32</h2>
   <p>Plug your ESP32 board into USB, click below, and pick the serial port that appears.<br>
      The browser detects the chip and flashes the matching factory image.</p>
   <p>
@@ -66,7 +66,7 @@
 
 <div class="warn">
   <strong>⚠ Auto-migration runs by default.</strong>
-  Right after WiFi provisioning, BoseFix32 will <em>automatically</em>
+  Right after WiFi provisioning, SixBack will <em>automatically</em>
   discover every SoundTouch speaker on your LAN (model whitelist
   <code>SoundTouch 10/20/30</code>, firmware <code>27.0.6.x</code> /
   <code>27.0.3.x</code>) and rewrite its cloud URLs to point at the stick
@@ -76,7 +76,7 @@
   and picks up newcomers automatically.<br>
   <br>
   If you want to drive migrations by hand, open
-  <code>http://bosefix.local/</code> right after provisioning and flip
+  <code>http://sixback.local/</code> right after provisioning and flip
   the <strong>Auto-Migrate at Boot</strong> switch at the top
   <em>before</em> the device finishes discovering your speakers.
 </div>
@@ -107,15 +107,15 @@
       matching factory image from <a href="manifest.json"><code>manifest.json</code></a>.</li>
   <li>The factory image — bootloader + partition table + firmware + Web UI —
       is written to <code>0x0</code> in one shot. Old contents are erased.</li>
-  <li>After reboot, BoseFix32 starts in <strong>Improv-Wi-Fi</strong> mode and
+  <li>After reboot, SixBack starts in <strong>Improv-Wi-Fi</strong> mode and
       waits for credentials. esp-web-tools offers the Improv flow right after
       flashing, so you can hand over Wi-Fi SSID and password from the same page.</li>
-  <li>The device then advertises itself as <code>bosefix.local</code> on mDNS;
-      open <code>http://bosefix.local/</code> to manage your Bose speakers.</li>
+  <li>The device then advertises itself as <code>sixback.local</code> on mDNS;
+      open <code>http://sixback.local/</code> to manage your Bose speakers.</li>
 </ol>
 
 <div class="ok">
-  <strong>OTA updates later:</strong> once BoseFix32 runs on the device, future
+  <strong>OTA updates later:</strong> once SixBack runs on the device, future
   updates can be uploaded via the Web&nbsp;UI's <em>System</em> panel without
   USB — that's what the <code>*-firmware.bin</code> and <code>*-littlefs.bin</code>
   files next to the factory images are for.
@@ -125,17 +125,18 @@
 <p>Each target ships three artefacts you can download and flash manually with
    <a href="https://github.com/espressif/esptool"><code>esptool.py</code></a>:</p>
 <ul>
-  <li><code>bosefix32-&lt;tgt&gt;-factory.bin</code> — full image, flash to <code>0x0</code></li>
-  <li><code>bosefix32-&lt;tgt&gt;-firmware.bin</code> — app only, for OTA</li>
-  <li><code>bosefix32-&lt;tgt&gt;-littlefs.bin</code> — Web UI assets, for FS-OTA</li>
+  <li><code>sixback-&lt;tgt&gt;-factory.bin</code> — full image, flash to <code>0x0</code></li>
+  <li><code>sixback-&lt;tgt&gt;-firmware.bin</code> — app only, for OTA</li>
+  <li><code>sixback-&lt;tgt&gt;-littlefs.bin</code> — Web UI assets, for FS-OTA</li>
 </ul>
 <p>Example:</p>
-<pre><code>esptool.py --chip esp32s3 -p /dev/ttyACM0 write_flash 0x0 bosefix32-s3-factory.bin</code></pre>
+<pre><code>esptool.py --chip esp32s3 -p /dev/ttyACM0 write_flash 0x0 sixback-s3-factory.bin</code></pre>
 
 <footer>
-  Hosted at <a href="https://install.busware.de/bosefix/">install.busware.de/bosefix/</a>
+  Hosted at <a href="https://install.busware.de/sixback/">install.busware.de/sixback/</a>
   · source code &amp; bug reports:
   <a href="https://github.com/tostmann/BoseFix32">github.com/tostmann/BoseFix32</a>
+  (repo rename to <code>SixBack</code> pending)
   · not affiliated with Bose Corporation.
 </footer>
 

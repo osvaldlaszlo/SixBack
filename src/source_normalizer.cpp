@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// BoseFix32 — Source-Normalizer
+// SixBack — Source-Normalizer
 
 #include "source_normalizer.h"
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
 #include <WiFi.h>
 
-namespace bosefix {
+namespace sixback {
 
 namespace {
 
@@ -30,7 +30,7 @@ bool resolveRadioBrowserUuid(const String& uuid,
     http.setReuse(false);  // single-shot probe — kein TIME_WAIT-pcb-leak
     http.setConnectTimeout(4000);
     http.setTimeout(6000);
-    http.setUserAgent("BoseFix32/1.0 (+https://github.com/tostmann/BoseFix32)");
+    http.setUserAgent("SixBack/1.0 (+https://github.com/tostmann/SixBack)");
     String url = "http://de1.api.radio-browser.info/json/stations/byuuid/" + uuid;
     if (!http.begin(url)) return false;
     int code = http.GET();
@@ -127,4 +127,4 @@ NormalizeResult normalizePreset(const String& sourceStr,
     return r;
 }
 
-} // namespace bosefix
+} // namespace sixback

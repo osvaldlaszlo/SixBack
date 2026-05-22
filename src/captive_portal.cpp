@@ -8,7 +8,7 @@
 #include <ESPAsyncWebServer.h>
 #include <DNSServer.h>
 
-namespace bosefix {
+namespace sixback {
 
 namespace {
 
@@ -46,14 +46,14 @@ constexpr uint32_t SAVE_TIMEOUT_MS = 20 * 1000;
 String formHtml() {
     return F(
 "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
-"<title>BoseFix32 \xe2\x80\x94 WiFi Setup</title>"
+"<title>SixBack \xe2\x80\x94 WiFi Setup</title>"
 "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
 "<style>body{font:-apple-system,Segoe UI,sans-serif;max-width:28em;margin:1.5em auto;padding:0 1em;color:#222;background:#f7f6f3}"
 "h1{color:#7a3e00;margin:0 0 .2em}label{display:block;margin:.9em 0 .25em;font-weight:600;font-size:.9em}"
 "input,select{width:100%;padding:.45em;font:inherit;border:1px solid #e1ddd2;border-radius:4px;background:#fff}"
 "button{margin-top:1.2em;width:100%;padding:.7em;background:#7a3e00;color:#fff;border:0;border-radius:5px;font:inherit;font-weight:600;cursor:pointer}"
 "button:hover{background:#5a2d00}p{color:#777;font-size:.9em}</style></head><body>"
-"<h1>BoseFix32 \xe2\x80\x94 WiFi Setup</h1>"
+"<h1>SixBack \xe2\x80\x94 WiFi Setup</h1>"
 "<p>Pick your home network and enter its password.</p>"
 "<form method=\"post\" action=\"/save\">"
 "<label>Network</label>"
@@ -72,22 +72,22 @@ String formHtml() {
 String successHtml(const String& staIp) {
     String h = F(
 "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
-"<title>BoseFix32 \xe2\x80\x94 Connected</title>"
+"<title>SixBack \xe2\x80\x94 Connected</title>"
 "<meta http-equiv=\"refresh\" content=\"20;url=http://");
     h += staIp;
     h += F("/\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
 "<style>body{font:-apple-system,Segoe UI,sans-serif;max-width:28em;margin:1.5em auto;padding:0 1em;color:#222;background:#f7f6f3}"
 "h1{color:#1f7a3a;margin:0 0 .3em}p{color:#444}code{background:#fee;padding:.1em .35em;border-radius:3px}"
 "a{color:#7a3e00}</style></head><body><h1>Connected!</h1>"
-"<p>BoseFix32 is now on your LAN at <a href=\"http://");
+"<p>SixBack is now on your LAN at <a href=\"http://");
     h += staIp;
     h += F("/\">http://");
     h += staIp;
-    h += F("/</a> (or <code>http://bosefix.local/</code>).</p>"
+    h += F("/</a> (or <code>http://sixback.local/</code>).</p>"
 "<p><b>Switch your phone back to your normal Wi-Fi.</b> This page will "
 "redirect there automatically in 20 seconds \xe2\x80\x94 which of course "
 "only works once you are on the right network.</p>"
-"<p style=\"color:#777;font-size:.85em\">BoseFix32 " FW_VERSION_STRING "</p>"
+"<p style=\"color:#777;font-size:.85em\">SixBack " FW_VERSION_STRING "</p>"
 "</body></html>");
     return h;
 }
@@ -135,7 +135,7 @@ void handleScan(AsyncWebServerRequest* req) {
 String progressHtml(const String& ssid) {
     String h = F(
 "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
-"<title>BoseFix32 \xe2\x80\x94 Connecting</title>"
+"<title>SixBack \xe2\x80\x94 Connecting</title>"
 "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
 "<style>body{font:-apple-system,Segoe UI,sans-serif;max-width:28em;margin:1.5em auto;padding:0 1em;color:#222;background:#f7f6f3}"
 "h1{color:#7a3e00;margin:0 0 .3em}p{color:#444}"
@@ -143,7 +143,7 @@ String progressHtml(const String& ssid) {
 ".ok{color:#1f7a3a}.err{color:#a32525}.busy{color:#7a3e00}"
 "a{color:#7a3e00}</style></head><body>"
 "<h1>Connecting\xe2\x80\xa6</h1>"
-"<p>BoseFix32 is associating with <b>");
+"<p>SixBack is associating with <b>");
     h += ssid;
     h += F("</b>. This may take up to 20 seconds.</p>"
 "<div id=\"status\" class=\"busy\">\xe2\x8f\xb3 connecting\xe2\x80\xa6</div>"
@@ -221,7 +221,7 @@ void captiveStart() {
 
     uint8_t mac[6]; WiFi.macAddress(mac);
     char buf[24];
-    snprintf(buf, sizeof(buf), "BoseFix32-%02X%02X%02X", mac[3], mac[4], mac[5]);
+    snprintf(buf, sizeof(buf), "SixBack-%02X%02X%02X", mac[3], mac[4], mac[5]);
     apSsid = buf;
 
     Serial.printf("[captive] starting open AP '%s' + DNS + HTTP on %s\n",
@@ -307,4 +307,4 @@ uint32_t captiveWindowRemainingS() {
     return e >= CAPTIVE_WINDOW_MS ? 0 : (CAPTIVE_WINDOW_MS - e) / 1000;
 }
 
-}  // namespace bosefix
+}  // namespace sixback

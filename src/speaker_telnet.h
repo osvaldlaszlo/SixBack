@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// BoseFix32 — Speaker-Bootstrap via Telnet Port 17000 (Bose Diag Shell)
+// SixBack — Speaker-Bootstrap via Telnet Port 17000 (Bose Diag Shell)
 //
 // Diese Funktionen führen die Cloud-URL-Migration am Speaker durch.
 // Nutzt die Bose-eigene Diagnostic-Shell (KEINE Linux-Shell — siehe
