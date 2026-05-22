@@ -78,7 +78,7 @@ cat > "$OUT/manifest.json" <<EOF
 {
   "name": "SixBack",
   "version": "$VERSION",
-  "funding_url": "https://github.com/tostmann/BoseFix32",
+  "funding_url": "https://polyformproject.org/licenses/noncommercial/1.0.0/",
   "new_install_prompt_erase": true,
   "builds": [
     {

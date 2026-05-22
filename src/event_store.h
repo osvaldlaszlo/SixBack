@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SixBack — Event-Store fuer SCMUDC-Telemetrie (P2)
 //
 // Speaker POSTen jede UI-/Playback-Zustandsaenderung als JSON an

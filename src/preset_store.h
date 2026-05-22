@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SixBack — Preset-Store
 //
 // Verwaltet pro Speaker eine Liste von max. 6 Presets, persistent in NVS.

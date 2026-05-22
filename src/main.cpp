@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SixBack — Main
 //
 // Vollständige SixBack-Firmware:
@@ -38,6 +38,9 @@ static void banner() {
     Serial.println("=========================================");
     Serial.printf("  %s %s\n", FW_NAME, FW_VERSION_STRING);
     Serial.printf("  Build: %s\n", FW_BUILD_DATE);
+    Serial.println("  Copyright (c) 2026 Dirk Tostmann");
+    Serial.println("  License: PolyForm Noncommercial 1.0.0");
+    Serial.println("  Commercial use prohibited — see LICENSE");
     Serial.println("=========================================");
 }
 

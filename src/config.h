@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SixBack — global constants
 #ifndef BOSEFIX32_CONFIG_H
 #define BOSEFIX32_CONFIG_H

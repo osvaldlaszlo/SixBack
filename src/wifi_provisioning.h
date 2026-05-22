@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SixBack — WiFi-Provisionierung via Improv + Captive-Portal
 // (Schwester-Pattern aus ip4knx / TUL KNX-Gateway).
 //

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SixBack — Bose Cloud Replacement Endpoints
 //
 // Diese Endpoints emuliert der ESP für die Speaker. Verifizierte Liste

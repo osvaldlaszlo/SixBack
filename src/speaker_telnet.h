@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SixBack — Speaker-Bootstrap via Telnet Port 17000 (Bose Diag Shell)
 //
 // Diese Funktionen führen die Cloud-URL-Migration am Speaker durch.

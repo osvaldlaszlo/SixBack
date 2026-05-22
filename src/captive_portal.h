@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SixBack — Captive Portal for first-time WiFi provisioning.
 //
 // Aktiv wenn keine NVS-Credentials oder STA-Connect-Timeout. ESP oeffnet

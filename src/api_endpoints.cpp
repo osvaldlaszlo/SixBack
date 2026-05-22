@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SixBack — Verwaltungs-REST-API (Port 80)
 //
 // Vollstaendige Speaker-/Preset-/Gruppen-Verwaltung. Frontend (Web-UI)
@@ -112,6 +112,8 @@ void handleStatus(AsyncWebServerRequest* req) {
     doc["name"]       = FW_NAME;
     doc["version"]    = FW_VERSION_STRING;
     doc["build"]      = FW_BUILD_DATE;
+    doc["license"]    = "PolyForm-Noncommercial-1.0.0";
+    doc["copyright"]  = "Copyright (c) 2026 Dirk Tostmann";
     doc["uptime_s"]   = millis() / 1000;
 
     JsonObject wifi   = doc["wifi"].to<JsonObject>();

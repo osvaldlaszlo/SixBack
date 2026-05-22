@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SixBack — Auto-Mode (Zero-Touch Migration + Preset-Restore)
 
 #include "auto_mode.h"
@@ -237,13 +237,22 @@ void migrateOne_(const Speaker& snap) {
         g_status.slotsConverted  += converted;
         g_status.slotsAbandoned  += abandoned;
     }
-    if (total == 0) {
-        setError_("speaker " + snap.deviceId + " has no readable presets — skip");
+    // 2026-05-22: Speaker mit 0 Presets (Erstboot aus der Schachtel,
+    // factory-reset, oder Nutzer hat schlicht nie Presets eingerichtet)
+    // dennoch migrieren. Sonst bleibt der Speaker auf der toten Bose-Cloud
+    // haengen und SixBack tut "nichts". Es gibt nichts zu verlieren — der
+    // Preset-Store bleibt fuer das Device leer, spaetere Long-Press-Set's
+    // am Knopf werden via Cron-Tick + import-from-device nachgezogen.
+    // Beobachtet bei zwei verschiedenen ST20-Snapshots (F45EABFF63E4 /
+    // 2C6B7DB9D239) — siehe snapshots ohne presets-Eintrag.
+    if (total > 0 && total - abandoned == 0) {
+        setError_("speaker " + snap.deviceId + " has presets but all sources unsupported — skip");
         return;
     }
-    if (total - abandoned == 0) {
-        setError_("speaker " + snap.deviceId + " has only unsupported sources — skip");
-        return;
+    if (total == 0) {
+        Serial.printf("[auto] %s has 0 presets — migrating anyway "
+                      "(empty store is fine, future presets push via cron)\n",
+                      snap.deviceId.c_str());
     }
 
     setState_("migrate-telnet");
@@ -258,6 +267,55 @@ void migrateOne_(const Speaker& snap) {
     if (!waitForSpeakerBack_(snap.ip, 180000)) {
         setError_("speaker " + snap.ip + " did not come back within 180s");
         return;
+    }
+
+    // 2026-05-22: Post-Reboot-Verifikation der margeServerUrl.
+    //
+    // Reproduzierbar in der Lab-Praxis: migrateSpeaker() liefert r.ok=true
+    // und das in-line getpdo direkt nach Telnet-Push zeigt auch oft die
+    // neue URL, ABER nach Reboot fallback'd der Speaker manchmal auf eine
+    // FRUEHERE margeServerUrl zurueck (vermutlich Diag-Shell-NVS-Race:
+    // Push erfolgreich, aber Persistierung in Diag-NVS schlaegt fehl /
+    // wird beim Reboot ueberschrieben).  Beobachtet bei Kueche/ST30 in
+    // einer migrate-revert-migrate-Schleife: getpdo nach Boot zeigte alte
+    // S3-URL obwohl C6-Migrate erfolgreich war → Speaker pollt falschen
+    // Cloud-Server, kriegt leeres /full, droppt alle Presets lokal.
+    //
+    // Fix: nach waitForSpeakerBack_ noch eine zweite getpdo-Runde via
+    // captureSysConfigurationList machen, margeServerUrl extrahieren und
+    // gegen `base` vergleichen. Bei Mismatch: status auf MIGRATE_FAILED
+    // (kein MIGRATED), Inventory bleibt unown'd, naechster Cron-Tick
+    // probiert es erneut.
+    setState_("verify-postboot");
+    String postReply;
+    bool gotReply = ::captureSysConfigurationList(snap.ip, postReply);
+    if (gotReply) {
+        // extrahiere margeServerUrl aus dem getpdo-Reply
+        int p = postReply.indexOf("margeServerUrl");
+        int t = (p >= 0) ? postReply.indexOf("text:", p) : -1;
+        int q1 = (t >= 0) ? postReply.indexOf('"', t) : -1;
+        int q2 = (q1 >= 0) ? postReply.indexOf('"', q1 + 1) : -1;
+        String actualMarge = (q1 >= 0 && q2 > q1)
+            ? postReply.substring(q1 + 1, q2) : String("");
+
+        if (actualMarge.length() > 0 && actualMarge != base) {
+            Serial.printf("[auto] VERIFY-FAIL %s: post-reboot margeServerUrl=%s "
+                          "expected=%s — NOT marking migrated\n",
+                          snap.deviceId.c_str(), actualMarge.c_str(), base.c_str());
+            setError_("post-reboot margeServerUrl mismatch: got '" + actualMarge +
+                      "', expected '" + base + "'");
+            return;
+        }
+        Serial.printf("[auto] VERIFY-OK %s: post-reboot margeServerUrl=%s\n",
+                      snap.deviceId.c_str(), actualMarge.c_str());
+    } else {
+        // Wenn getpdo nicht mal antwortet: Telnet ist hin, aber BMX
+        // (verifiziert durch waitForSpeakerBack_) lebt. Markieren wir trotzdem
+        // als MIGRATED, da der Speaker offensichtlich erreichbar ist und die
+        // Inline-Verifikation in migrateSpeaker schon einmal OK war. Nur Log.
+        Serial.printf("[auto] VERIFY-SKIP %s: post-reboot getpdo no reply — "
+                      "marking migrated based on inline check\n",
+                      snap.deviceId.c_str());
     }
 
     auto& inv = SpeakerInventory::instance();
