@@ -37,6 +37,56 @@ mkdir -p "$OUT"
 VERSION="$(grep -oE '"[0-9]+\.[0-9]+\.[0-9]+"' "$ROOT/src/version.h" | tr -d '"')"
 echo ">>> SixBack release build, version=$VERSION"
 
+# --- 1.5) Size gate: refuse to publish images that don't fit -------------
+# v0.7.3 shipped c3/c6 factory-images that exceeded the 0x1C0000 app-slot
+# by 8-16 KB. Boot-ROM rejected them with "Image length doesn't fit in
+# partition length" -> dead boot-loop on every freshly flashed device.
+# Hotfix v0.7.4 enlarged the slot and added this gate so it can't happen
+# again silently.
+#
+# Limits MUST stay in sync with the partition CSVs:
+#   partitions-4mb.csv  -> APP_4MB / FS_4MB
+#   partitions.csv      -> APP_16MB / FS_16MB
+APP_4MB=$((0x1D0000))      # 1.900.544  — app0/app1 in partitions-4mb.csv
+FS_4MB=$((0x40000))        #   262.144  — spiffs   in partitions-4mb.csv
+APP_16MB=$((0x300000))     # 3.145.728  — app0/app1 in partitions.csv
+FS_16MB=$((0x9E0000))      # 10.354.688 — spiffs   in partitions.csv
+
+size_errors=0
+check_size() {
+  local bin="$1" limit="$2" label="$3"
+  if [ ! -f "$bin" ]; then
+    echo "[size-gate] MISSING: $label ($bin)" >&2
+    size_errors=$((size_errors+1)); return 0
+  fi
+  local sz; sz=$(stat -c '%s' "$bin")
+  if [ "$sz" -gt "$limit" ]; then
+    printf "[size-gate] OVER: %-12s %8d > %8d (over by %d B) -> %s\n" \
+      "$label" "$sz" "$limit" "$((sz - limit))" "$bin" >&2
+    size_errors=$((size_errors+1))
+  else
+    printf "[size-gate] ok:   %-12s %8d / %8d (%d B headroom)\n" \
+      "$label" "$sz" "$limit" "$((limit - sz))"
+  fi
+}
+
+check_size "$PIO_BUILD/esp32/firmware.bin" $APP_4MB  "esp32 app"
+check_size "$PIO_BUILD/esp32/littlefs.bin" $FS_4MB   "esp32 fs"
+check_size "$PIO_BUILD/c3/firmware.bin"    $APP_4MB  "c3 app"
+check_size "$PIO_BUILD/c3/littlefs.bin"    $FS_4MB   "c3 fs"
+check_size "$PIO_BUILD/c6/firmware.bin"    $APP_4MB  "c6 app"
+check_size "$PIO_BUILD/c6/littlefs.bin"    $FS_4MB   "c6 fs"
+check_size "$PIO_BUILD/s3/firmware.bin"    $APP_16MB "s3 app"
+check_size "$PIO_BUILD/s3/littlefs.bin"    $FS_16MB  "s3 fs"
+
+if [ "$size_errors" -gt 0 ]; then
+  echo >&2
+  echo "ABORT: $size_errors size violation(s) — refusing to publish." >&2
+  echo "  Fix partition table (partitions*.csv) or shrink the build."  >&2
+  echo "  Do NOT bypass — devices boot-loop and brick on first flash." >&2
+  exit 2
+fi
+
 # --- 2) Per-target merge into single factory image -----------------------
 ESPTOOL=( "$HOME/.platformio/penv/bin/pio" pkg exec --package "platformio/tool-esptoolpy" -- python -m esptool )
 
