@@ -446,10 +446,20 @@ void handleGetPresets(AsyncWebServerRequest* req) {
         o["imageUrl"]  = p.imageUrl;
         if (p.source == sixback::PresetSource::OPAQUE) {
             o["opaqueSourceName"] = p.opaqueSourceName;
-            // rawContentItem nicht standardmaessig ausliefern (kann gross sein,
-            // und ohnehin nur fuer Diagnose interessant — Diagnostic-Snapshot
-            // hat das XML vollstaendig).
             o["rawContentItemBytes"] = (uint16_t)p.rawContentItem.length();
+            // containerArt-URL aus rawContentItem extrahieren, falls vorhanden.
+            // DLNA-Slots (z.B. forum-user OG_Bad_ST10weiss slot 1) haben oft
+            // `<containerArt>http://192.168.x.y/...</containerArt>` mit dem
+            // Cover-Art-Link des lokalen DLNA-Servers. Wenn der Browser sich
+            // im selben Netz befindet, laedt das Bild direkt.
+            int caStart = p.rawContentItem.indexOf("<containerArt>");
+            if (caStart >= 0) {
+                int caEnd = p.rawContentItem.indexOf("</containerArt>", caStart);
+                if (caEnd > caStart + 14) {
+                    String ca = p.rawContentItem.substring(caStart + 14, caEnd);
+                    if (ca.startsWith("http")) o["containerArt"] = ca;
+                }
+            }
         }
     }
     String body; serializeJson(doc, body);
@@ -479,6 +489,52 @@ void handlePutPreset(AsyncWebServerRequest* req, JsonDocument& body) {
     p.imageUrl  = (const char*)(body["imageUrl"]  | "");
     bool ok = sixback::PresetStore::instance().set(id, p);
     req->send(ok ? 200 : 500, "application/json", ok ? "{\"ok\":true}" : "{\"error\":\"set failed\"}");
+}
+
+// -----------------------------------------------------------------------------
+// GET /api/speaker/{id}/preset/{n}/export
+//   Liefert ein einzelnes Preset als JSON-Datei mit Content-Disposition
+//   "attachment", damit Browser einen File-Download triggern (für drag-to-
+//   desktop-Workflow). Schema ist kompatibel zum PUT-Endpoint:
+//     { source, name, stationId, streamUrl, imageUrl, sixback_preset:1, exported_from }
+// -----------------------------------------------------------------------------
+void handleExportPreset(AsyncWebServerRequest* req) {
+    String id  = req->pathArg(0);
+    uint8_t slot = req->pathArg(1).toInt();
+    if (slot < 1 || slot > 6) { req->send(400, "application/json", "{\"error\":\"slot 1..6\"}"); return; }
+    auto p = sixback::PresetStore::instance().get(id, slot);
+    JsonDocument doc;
+    doc["sixback_preset"] = 1;     // schema marker for the importer
+    doc["exported_from"]  = id;
+    doc["slot"]           = slot;
+    doc["source"]         = sixback::presetSourceToStr(p.source);
+    doc["name"]           = p.name;
+    doc["stationId"]      = p.stationId;
+    doc["streamUrl"]      = p.streamUrl;
+    doc["imageUrl"]       = p.imageUrl;
+    if (p.source == sixback::PresetSource::OPAQUE) {
+        doc["opaqueSourceName"] = p.opaqueSourceName;
+    }
+    String body; serializeJson(doc, body);
+
+    // Filename: sanitized "<speaker-name>-slot-<n>.json" if we have a name in inventory,
+    // else "preset-<dev>-<n>.json".
+    String fname = "preset-" + id + "-" + String(slot) + ".json";
+    {
+        sixback::SpeakerInventory::LockGuard g(sixback::SpeakerInventory::instance());
+        auto* sp = sixback::SpeakerInventory::instance().findById(id);
+        if (sp && sp->name.length() > 0) {
+            String safe;
+            for (size_t i = 0; i < sp->name.length() && safe.length() < 32; ++i) {
+                char c = sp->name[i];
+                safe += (isalnum((unsigned char)c) || c == '-' || c == '_') ? c : '-';
+            }
+            if (safe.length() > 0) fname = safe + "-slot-" + String(slot) + ".json";
+        }
+    }
+    auto* resp = req->beginResponse(200, "application/json", body);
+    resp->addHeader("Content-Disposition", "attachment; filename=\"" + fname + "\"");
+    req->send(resp);
 }
 
 void handleDeletePreset(AsyncWebServerRequest* req) {
@@ -680,13 +736,14 @@ static void doPush_(const PushPresetJob_& job) {
     String url = "http://" + job.spIp + ":" + String(BOSE_BMX_PORT) + "/select";
     int selectCode = -1;
     if (http.begin(url)) {
-        // sourceAccount muss zum Speaker-/sources-Eintrag passen, sonst HTTP 500:
-        //   TUNEIN -> "TuneIn" (Greta+Emma+Kueche haben das so unter sourceItem
-        //             source="TUNEIN" sourceAccount="TuneIn" gespeichert).
-        //   LOCAL_INTERNET_RADIO -> "" (das ist der ESP-eigene Stream-Proxy,
-        //             Speaker akzeptiert leeren Account).
-        const char* srcAcct =
-            (job.p.source == sixback::PresetSource::TUNEIN) ? "TuneIn" : "";
+        // sourceAccount: empirisch 2026-05-23 mit Emma:
+        //   "TuneIn" -> HTTP 500 1005 UNKNOWN_SOURCE_ERROR
+        //   ""       -> HTTP 200 + now_playing schaltet auf TUNEIN
+        // Aeltere Memory-Notiz (reference_bose_select_sourceaccount.md) sagt
+        // TUNEIN braeuchte "TuneIn" — gilt nicht auf der aktuellen Bose-FW
+        // dieser Speaker (Emma SoundTouch 10 FW 27.0.3). Empty fuer beide
+        // Source-Typen scheint zuverlaessig zu funktionieren.
+        const char* srcAcct = "";
         String ci = "<ContentItem source=\"";
         ci += sixback::presetSourceToStr(job.p.source);
         ci += "\" type=\"stationurl\" location=\"";
@@ -701,23 +758,35 @@ static void doPush_(const PushPresetJob_& job) {
         selectCode = http.POST(ci);
         http.end();
     }
-    delay(4000);  // Stream stabilisieren
+    if (selectCode != 200) {
+        // /select failed (network glitch, speaker STANDBY/busy, UNKNOWN_SOURCE,
+        // etc.). Long-Press would save whatever happens to be playing at that
+        // moment to this slot — almost guaranteed to be wrong. Abort.
+        Serial.printf("[bg:push-preset] %s slot %u ABORT — /select=%d (no long-press attempted)\n",
+                      job.spIp.c_str(), job.p.slot, selectCode);
+        return;
+    }
+    delay(8000);  // Stream stabilisieren — 4 s war in der Praxis oft zu kurz
+                  // (siehe Push-Reliability-Bug 2026-05-22): Bose-FW akzeptiert
+                  // /select 200 bevor /now_playing tatsaechlich umgeschaltet ist,
+                  // dann findet long-press kein "current playing" zum Speichern.
     // Long-Press PRESET_n
     auto sendKey = [&](const String& state) {
         HTTPClient h;
         h.setReuse(false);
         String u = "http://" + job.spIp + ":" + String(BOSE_BMX_PORT) + "/key";
-        if (!h.begin(u)) return;
+        if (!h.begin(u)) return -1;
         h.addHeader("Content-Type", "text/xml");
         String body = "<key state=\"" + state + "\" sender=\"Gabbo\">PRESET_" + String(job.p.slot) + "</key>";
-        h.POST(body);
+        int rc = h.POST(body);
         h.end();
+        return rc;
     };
-    sendKey("press");
+    int pressRc = sendKey("press");
     delay(2500);  // > 2s = Long-Press
-    sendKey("release");
-    Serial.printf("[bg:push-preset] %s slot %u select=%d done\n",
-                  job.spIp.c_str(), job.p.slot, selectCode);
+    int releaseRc = sendKey("release");
+    Serial.printf("[bg:push-preset] %s slot %u select=%d press=%d release=%d done\n",
+                  job.spIp.c_str(), job.p.slot, selectCode, pressRc, releaseRc);
 }
 
 void pushPresetWorker_(void* /*arg*/) {
@@ -775,6 +844,312 @@ void handlePushPresetToDevice(AsyncWebServerRequest* req) {
     String body = "{\"ok\":true,\"queued\":true,\"queue_depth\":";
     body += String((unsigned)depth);
     body += ",\"message\":\"preset push enqueued — sequential push-worker, ~7s per slot\"}";
+    req->send(202, "application/json", body);
+}
+
+// -----------------------------------------------------------------------------
+// POST /api/speaker/{id}/key/{KEY}
+//   Proxy fuer Speaker-Side /key: kurzer Press + Release. KEY ist eines der
+//   Bose-Tasten-Tokens (POWER, PRESET_1..6, AUX, BLUETOOTH, PLAY, PAUSE,
+//   NEXT_TRACK, …). Erlaubt der WebUI die Hardware-Tasten zu simulieren ohne
+//   CORS-Probleme mit dem Speaker-Endpoint.
+// -----------------------------------------------------------------------------
+void handleSpeakerKey(AsyncWebServerRequest* req) {
+    String id = req->pathArg(0);
+    String key = req->pathArg(1);
+    auto& inv = sixback::SpeakerInventory::instance();
+    String spIp;
+    {
+        sixback::SpeakerInventory::LockGuard g(inv);
+        auto* sp = inv.findById(id);
+        if (!sp) { req->send(404, "application/json", "{\"error\":\"unknown deviceId\"}"); return; }
+        spIp = sp->ip;
+    }
+    auto sendKey = [&](const String& state) {
+        HTTPClient h;
+        h.setReuse(false);
+        String u = "http://" + spIp + ":" + String(BOSE_BMX_PORT) + "/key";
+        if (!h.begin(u)) return -1;
+        h.addHeader("Content-Type", "text/xml");
+        String body = "<key state=\"" + state + "\" sender=\"Gabbo\">" + key + "</key>";
+        int rc = h.POST(body);
+        h.end();
+        return rc;
+    };
+    int p = sendKey("press");
+    delay(150);  // Short press
+    int r = sendKey("release");
+    JsonDocument out;
+    out["ok"] = (p == 200 && r == 200);
+    out["key"] = key;
+    out["press"] = p;
+    out["release"] = r;
+    String b; serializeJson(out, b);
+    req->send(out["ok"] ? 200 : 502, "application/json", b);
+}
+
+// -----------------------------------------------------------------------------
+// POST /api/speaker/{id}/play-preset/{n}
+//   Short-press eines Preset-Slots am Speaker — spielt den Slot wie wenn man
+//   physisch die Taste 1..6 drueckt. KEIN Long-Press, KEIN /select-Update.
+//   Wenn Slot leer ist, macht der Speaker meistens nichts.
+// -----------------------------------------------------------------------------
+void handlePlayPreset(AsyncWebServerRequest* req) {
+    String id = req->pathArg(0);
+    int slot = req->pathArg(1).toInt();
+    if (slot < 1 || slot > 6) { req->send(400, "application/json", "{\"error\":\"slot 1..6\"}"); return; }
+    auto& inv = sixback::SpeakerInventory::instance();
+    String spIp;
+    {
+        sixback::SpeakerInventory::LockGuard g(inv);
+        auto* sp = inv.findById(id);
+        if (!sp) { req->send(404, "application/json", "{\"error\":\"unknown deviceId\"}"); return; }
+        spIp = sp->ip;
+    }
+    auto sendKey = [&](const String& state) {
+        HTTPClient h;
+        h.setReuse(false);
+        String u = "http://" + spIp + ":" + String(BOSE_BMX_PORT) + "/key";
+        if (!h.begin(u)) return -1;
+        h.addHeader("Content-Type", "text/xml");
+        String body = "<key state=\"" + state + "\" sender=\"Gabbo\">PRESET_" + String(slot) + "</key>";
+        int rc = h.POST(body);
+        h.end();
+        return rc;
+    };
+    int p = sendKey("press");
+    delay(150);
+    int r = sendKey("release");
+    JsonDocument out;
+    out["ok"] = (p == 200 && r == 200);
+    out["slot"] = slot;
+    String b; serializeJson(out, b);
+    req->send(out["ok"] ? 200 : 502, "application/json", b);
+}
+
+// -----------------------------------------------------------------------------
+// GET /api/speaker/{id}/now-playing-live
+//   Proxy fuer Speaker /now_playing (Live-Pull, nicht aus dem SCMUDC-Event-
+//   Cache). Gibt getrimmte JSON-Sicht zurueck mit location-derived
+//   station_id und stream_url — das braucht der WebUI-Highlight um Slots
+//   per stationId/streamUrl zu matchen, was die SCMUDC-Variante nicht kennt.
+// -----------------------------------------------------------------------------
+void handleNowPlayingLive(AsyncWebServerRequest* req) {
+    String id = req->pathArg(0);
+    auto& inv = sixback::SpeakerInventory::instance();
+    String spIp;
+    {
+        sixback::SpeakerInventory::LockGuard g(inv);
+        auto* sp = inv.findById(id);
+        if (!sp) { req->send(404, "application/json", "{\"error\":\"unknown deviceId\"}"); return; }
+        spIp = sp->ip;
+    }
+    HTTPClient h;
+    h.setReuse(false);
+    String u = "http://" + spIp + ":" + String(BOSE_BMX_PORT) + "/now_playing";
+    if (!h.begin(u)) { req->send(502, "application/json", "{\"error\":\"http begin failed\"}"); return; }
+    int code = h.GET();
+    if (code != 200) {
+        h.end();
+        req->send(502, "application/json", String("{\"error\":\"speaker HTTP\",\"code\":") + code + "}");
+        return;
+    }
+    String xml = h.getString();
+    h.end();
+
+    auto extractAttr = [&](const String& tag, const String& attr) -> String {
+        int t = xml.indexOf("<" + tag);
+        if (t < 0) return String();
+        int e = xml.indexOf('>', t);
+        if (e < 0) return String();
+        String hdr = xml.substring(t, e);
+        String needle = attr + "=\"";
+        int s = hdr.indexOf(needle);
+        if (s < 0) return String();
+        s += needle.length();
+        int q = hdr.indexOf('"', s);
+        return q > s ? hdr.substring(s, q) : String();
+    };
+    auto extractTag = [&](const String& tag) -> String {
+        String open  = "<" + tag + ">";
+        String close = "</" + tag + ">";
+        int s = xml.indexOf(open);
+        if (s < 0) return String();
+        s += open.length();
+        int e = xml.indexOf(close, s);
+        return e > s ? xml.substring(s, e) : String();
+    };
+
+    String src      = extractAttr("ContentItem", "source");
+    String srcAcct  = extractAttr("ContentItem", "sourceAccount");
+    String location = extractAttr("ContentItem", "location");
+    String itemName = extractTag("itemName");
+    String trackName = extractTag("track");
+    String playStatus = extractTag("playStatus");
+    String art = extractTag("art");
+
+    // location für TUNEIN ist /v1/playback/station/<id> -> nimm den letzten Pfad-Teil als stationId
+    String stationId;
+    if (src == "TUNEIN" && location.startsWith("/v1/playback/station/")) {
+        stationId = location.substring(21);
+    }
+
+    JsonDocument out;
+    out["source"] = src;
+    out["source_account"] = srcAcct;
+    out["name"] = itemName;
+    out["track"] = trackName;
+    out["station_id"] = stationId;
+    out["stream_url"] = (src == "LOCAL_INTERNET_RADIO") ? location : "";
+    out["art_url"] = art;
+    out["play_status"] = playStatus;
+    String body; serializeJson(out, body);
+    req->send(200, "application/json", body);
+}
+
+// -----------------------------------------------------------------------------
+// Helper: Speaker-Side /presets-XML fetchen + grob parsen.
+// Returnt true wenn Fetch+Parse erfolgreich. Slot-Slots ohne preset bleiben
+// mit leerem source. Synchroner HTTP-Call (~100-300 ms) — akzeptabel weil
+// nur 1× pro push-all User-Klick aufgerufen.
+// -----------------------------------------------------------------------------
+struct HwSlotInfo_ {
+    String source;     // "TUNEIN" / "LOCAL_INTERNET_RADIO" / "STORED_MUSIC" / "" (empty)
+    String location;   // raw "location" attr value
+    String name;       // <itemName>
+};
+
+static bool fetchHardwarePresets_(const String& spIp, HwSlotInfo_ out[6]) {
+    HTTPClient h; h.setReuse(false);
+    h.setTimeout(3000);
+    String url = "http://" + spIp + ":" + String(BOSE_BMX_PORT) + "/presets";
+    if (!h.begin(url)) return false;
+    int code = h.GET();
+    if (code != 200) { h.end(); return false; }
+    String xml = h.getString();
+    h.end();
+    for (int slot = 1; slot <= 6; ++slot) {
+        String tag = "<preset id=\"" + String(slot) + "\"";
+        int idx = xml.indexOf(tag);
+        if (idx < 0) continue;
+        int end = xml.indexOf("</preset>", idx);
+        if (end < 0) continue;
+        String block = xml.substring(idx, end);
+        int ci = block.indexOf("<ContentItem");
+        if (ci < 0) continue;
+        int ciEnd = block.indexOf('>', ci);
+        if (ciEnd < 0) continue;
+        String hdr = block.substring(ci, ciEnd);
+        auto extract = [&](const String& attr) -> String {
+            String n = attr + "=\"";
+            int s = hdr.indexOf(n);
+            if (s < 0) return String();
+            s += n.length();
+            int e = hdr.indexOf('"', s);
+            return e > s ? hdr.substring(s, e) : String();
+        };
+        out[slot-1].source   = extract("source");
+        out[slot-1].location = extract("location");
+        int nm = block.indexOf("<itemName>");
+        if (nm >= 0) {
+            int ne = block.indexOf("</itemName>", nm);
+            if (ne > nm) out[slot-1].name = block.substring(nm + 10, ne);
+        }
+    }
+    return true;
+}
+
+// -----------------------------------------------------------------------------
+// POST /api/speaker/{id}/push-all
+//   Pusht nur die Slots wo Store-Stand != Hardware-Stand. Holt initial das
+//   Speaker-/presets-XML als Snapshot, vergleicht jeden Slot, und enqueued
+//   nur die Diff-Slots. Beispiel: bei einem Slot 1↔2 Swap werden 2 von 6
+//   Slots gepushed, nicht alle 6 (~30s vs ~75s).
+//   Skipt: EMPTY (store), OPAQUE (store), und Slots die schon korrekt am
+//   Speaker liegen ("synced" im Response).
+//   Reihenfolge im Push: slot 1..6 in ascending order.
+//
+//   Warum manueller Trigger statt auto-push pro PUT/swap: siehe Comment in
+//   handleSwapPresets — auto-push war flaky.
+// -----------------------------------------------------------------------------
+void handleBulkPushPresets(AsyncWebServerRequest* req) {
+    String id = req->pathArg(0);
+    auto& inv = sixback::SpeakerInventory::instance();
+    String spIp;
+    {
+        sixback::SpeakerInventory::LockGuard g(inv);
+        auto* sp = inv.findById(id);
+        if (!sp) { req->send(404, "application/json", "{\"error\":\"unknown deviceId\"}"); return; }
+        spIp = sp->ip;
+    }
+
+    if (!g_pushQueue) {
+        g_pushQueue = xQueueCreate(PUSH_QUEUE_DEPTH, sizeof(PushPresetJob_*));
+        if (!g_pushQueue) {
+            req->send(503, "application/json", "{\"error\":\"push queue alloc failed\"}"); return;
+        }
+        BaseType_t tr = xTaskCreate(pushPresetWorker_, "push-worker", 4096,
+                                     nullptr, tskIDLE_PRIORITY + 1, &g_pushTask);
+        if (tr != pdPASS) {
+            vQueueDelete(g_pushQueue);
+            g_pushQueue = nullptr;
+            req->send(503, "application/json", "{\"error\":\"push worker spawn failed\"}"); return;
+        }
+    }
+
+    HwSlotInfo_ hw[6];
+    bool hwOk = fetchHardwarePresets_(spIp, hw);
+
+    auto& store = sixback::PresetStore::instance();
+    int enqueued = 0, synced = 0, skippedOpaque = 0, skippedEmpty = 0;
+    for (uint8_t slot = 1; slot <= 6; ++slot) {
+        auto p = store.get(id, slot);
+        if (p.source == sixback::PresetSource::EMPTY)  { skippedEmpty++;  continue; }
+        if (p.source == sixback::PresetSource::OPAQUE) { skippedOpaque++; continue; }
+
+        if (hwOk) {
+            const auto& h = hw[slot-1];
+            bool already = false;
+            if (p.source == sixback::PresetSource::TUNEIN && h.source == "TUNEIN") {
+                String wantLoc = "/v1/playback/station/" + p.stationId;
+                if (h.location == wantLoc && h.name == p.name) already = true;
+            } else if (p.source == sixback::PresetSource::LOCAL_INTERNET_RADIO
+                       && h.source == "LOCAL_INTERNET_RADIO") {
+                if (h.location == p.streamUrl && h.name == p.name) already = true;
+            }
+            if (already) { synced++; continue; }
+        }
+
+        auto* job = new PushPresetJob_{spIp, p};
+        if (xQueueSend(g_pushQueue, &job, 0) != pdTRUE) {
+            delete job;
+            req->send(503, "application/json",
+                      "{\"error\":\"push queue full mid-bulk — retry in ~1 min\"}");
+            return;
+        }
+        enqueued++;
+    }
+
+    UBaseType_t depth = uxQueueMessagesWaiting(g_pushQueue);
+    JsonDocument out;
+    out["ok"]            = true;
+    out["enqueued"]      = enqueued;
+    out["synced"]        = synced;        // slots already matching the hardware
+    out["skipped_empty"] = skippedEmpty;
+    out["skipped_opaque"]= skippedOpaque;
+    out["hw_fetched"]    = hwOk;
+    out["queue_depth"]   = (unsigned)depth;
+    out["eta_seconds"]   = enqueued * 13;
+    if (enqueued == 0) {
+        out["message"] = hwOk
+            ? "all slots already in sync with speaker — nothing to push"
+            : "no slots needed pushing (speaker unreachable for diff, all slots EMPTY/OPAQUE)";
+    } else {
+        out["message"] = hwOk
+            ? "pushing only the diff — " + String(enqueued) + " of 6 slots"
+            : "pushing all non-empty slots (speaker /presets unreachable for diff)";
+    }
+    String body; serializeJson(out, body);
     req->send(202, "application/json", body);
 }
 
@@ -862,23 +1237,19 @@ void handleSwapPresets(AsyncWebServerRequest* req, JsonDocument& body) {
         return;
     }
 
-    int enqueued = 0;
-    if (newDst.source != sixback::PresetSource::EMPTY) {
-        auto* job = new PushPresetJob_{dstIp, newDst};
-        if (xQueueSend(g_pushQueue, &job, 0) == pdTRUE) enqueued++;
-        else delete job;
-    }
-    if (newSrc.source != sixback::PresetSource::EMPTY) {
-        auto* job = new PushPresetJob_{srcIp, newSrc};
-        if (xQueueSend(g_pushQueue, &job, 0) == pdTRUE) enqueued++;
-        else delete job;
-    }
+    // Swap aktualisiert NUR den Store. Push zum Speaker passiert ueber den
+    // expliziten "Push to speaker"-Button (handleBulkPushPresets), nicht
+    // automatisch — siehe Forum-Feedback 2026-05-23: auto-push war flaky
+    // (Speaker STANDBY, /select transient errors, timing-races) und tauschte
+    // hardware-Slots oft nicht zuverlaessig. Manueller Trigger erlaubt User
+    // die Slots in Ruhe zu komponieren + bewusst zu commit'n.
 
     JsonDocument out;
     out["ok"] = true;
-    out["enqueued"] = enqueued;
+    out["pushed"] = false;
+    out["message"] = "store updated — click 'Push 1-6 to speaker' on each affected speaker to write to hardware";
     String s; serializeJson(out, s);
-    req->send(202, "application/json", s);
+    req->send(200, "application/json", s);
 }
 
 // -----------------------------------------------------------------------------
@@ -1353,11 +1724,16 @@ void registerApiEndpoints(AsyncWebServer& ui) {
     ui.on("^/api/speaker/([^/]+)/presets$",        HTTP_GET,    handleGetPresets);
     routeJsonBody(ui, "^/api/speaker/([^/]+)/preset/([1-6])$", HTTP_PUT, handlePutPreset);
     ui.on("^/api/speaker/([^/]+)/preset/([1-6])$", HTTP_DELETE, handleDeletePreset);
+    ui.on("^/api/speaker/([^/]+)/preset/([1-6])/export$", HTTP_GET, handleExportPreset);
     ui.on("^/api/speaker/([^/]+)/preset/([1-6])/push-to-device$",
           HTTP_POST, handlePushPresetToDevice);
     ui.on("^/api/speaker/([^/]+)/presets/import-from-device$",
           HTTP_POST, handleImportFromDevice);
     routeJsonBody(ui, "/api/preset/swap", HTTP_POST, handleSwapPresets);
+    ui.on("^/api/speaker/([^/]+)/push-all$", HTTP_POST, handleBulkPushPresets);
+    ui.on("^/api/speaker/([^/]+)/key/([A-Z_0-9]+)$", HTTP_POST, handleSpeakerKey);
+    ui.on("^/api/speaker/([^/]+)/play-preset/([1-6])$", HTTP_POST, handlePlayPreset);
+    ui.on("^/api/speaker/([^/]+)/now-playing-live$", HTTP_GET, handleNowPlayingLive);
 
     ui.on("^/api/speaker/([^/]+)/diagnostic-snapshot$",
           HTTP_GET, handleDiagnosticSnapshot);

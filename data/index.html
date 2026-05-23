@@ -91,6 +91,21 @@
   .preset.drop-target { border-color: var(--accent); background: #eaf3ff;
                         box-shadow: 0 0 0 2px var(--accent) inset; }
   .preset.drop-blocked { border-color: #c44; background: #fcecec; cursor: not-allowed; }
+  /* Currently playing on the speaker */
+  .preset.playing { border-color: var(--accent); background: #eaf3ff;
+                    box-shadow: 0 0 0 2px var(--accent), 0 0 12px rgba(13,110,253,.35);
+                    animation: pulse-play 2s ease-in-out infinite; }
+  @keyframes pulse-play {
+    0%,100% { box-shadow: 0 0 0 2px var(--accent), 0 0 12px rgba(13,110,253,.35); }
+    50%     { box-shadow: 0 0 0 2px var(--accent), 0 0 20px rgba(13,110,253,.65); }
+  }
+  /* Power button — text-based, color reflects ON/OFF state */
+  .actions .pwr { font-weight: 600; letter-spacing: .04em; padding: .25em .7em;
+                  border: 1px solid var(--line); background: #eee; color: #666; }
+  .actions .pwr.on { background: #2ecc71; border-color: #27a05a; color: #fff;
+                     box-shadow: 0 0 0 1px #27a05a inset; }
+  .actions .pwr:hover { filter: brightness(.96); }
+  .actions .vol { font-weight: 600; padding: .25em .55em; min-width: 3em; }
 
   .modal { position: fixed; inset: 0; background: rgba(0,0,0,.4);
            display: none; align-items: center; justify-content: center; padding: 1em; z-index:99; }
@@ -174,6 +189,35 @@
   .switch input:checked + .slider { background: var(--ok); }
   .switch input:checked + .slider::before { transform: translateX(20px); }
   .switch input:disabled + .slider { opacity: .6; cursor: wait; }
+
+  /* Station library drawer (Phase 2) */
+  .lib-drawer { margin: 1em 0; border: 1px solid var(--line); border-radius: 8px;
+                background: #faf8ef; padding: .9em 1em; display: none; }
+  .lib-drawer.open { display: block; }
+  .lib-controls { display: flex; gap: .5em; flex-wrap: wrap; align-items: center; margin-bottom: .7em; }
+  .lib-controls input[type=text] { flex: 1 1 14em; padding: .4em .6em; font-size: 1em;
+                                    border: 1px solid var(--line); border-radius: 6px; background: #fff; }
+  .lib-controls select { padding: .4em; border: 1px solid var(--line); border-radius: 6px; background: #fff; }
+  .lib-controls .hint { color: var(--mute); font-size: .85em; flex: 1 1 100%; }
+  .lib-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+              gap: .55em; max-height: 32em; overflow-y: auto; padding-right: .3em; }
+  .lib-tile { border: 1px solid var(--line); border-radius: 6px; padding: .45em; background: #fff;
+              cursor: grab; display: flex; flex-direction: column; gap: .3em; transition: transform .08s, box-shadow .12s; }
+  .lib-tile:active { cursor: grabbing; }
+  .lib-tile:hover { box-shadow: 0 1px 4px rgba(0,0,0,.1); }
+  .lib-tile.dragging { opacity: .35; transform: scale(.97); }
+  .lib-tile img.tile-logo { width: 100%; aspect-ratio: 1/1; max-height: 64px; object-fit: contain;
+                            background: #fff; border: 1px solid #eee; border-radius: 4px; padding: 3px;
+                            pointer-events: none; }
+  .lib-tile .tile-logo-ph { width: 100%; aspect-ratio: 1/1; max-height: 64px; display: flex;
+                            align-items: center; justify-content: center; background: #fff;
+                            border: 1px dashed #ccc; border-radius: 4px; font-size: 1.3em; color: var(--mute);
+                            pointer-events: none; }
+  .lib-tile .tile-name { font-weight: 600; font-size: .85em; line-height: 1.2;
+                         overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .lib-tile .tile-meta { font-size: .72em; color: var(--mute);
+                         overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .lib-empty { text-align: center; color: var(--mute); padding: 2em; font-style: italic; }
 </style>
 </head>
 <body>
@@ -200,8 +244,30 @@
   <button onclick="refreshStatuses()">🔄 Refresh status</button>
   <button onclick="openAddModal()">+ Add speaker manually</button>
   <button onclick="openGroupSyncModal()">⇄ Sync presets to group</button>
+  <button id="lib-toggle" onclick="toggleLibrary()">📻 Browse stations</button>
   <button class="danger" onclick="rebootEsp()">⟲ Reboot ESP</button>
   <button class="danger" onclick="factoryResetWifi()">⚠ WiFi factory reset</button>
+</div>
+
+<div class="lib-drawer" id="lib-drawer">
+  <div class="lib-controls">
+    <input type="text" id="lib-q" placeholder="Search stations (e.g. SWR3, BBC, jazz)" oninput="onLibrarySearchInput()">
+    <select id="lib-country" onchange="loadLibrary()">
+      <option value="DE">🇩🇪 Germany</option>
+      <option value="AT">🇦🇹 Austria</option>
+      <option value="CH">🇨🇭 Switzerland</option>
+      <option value="GB">🇬🇧 United Kingdom</option>
+      <option value="US">🇺🇸 USA</option>
+      <option value="FR">🇫🇷 France</option>
+      <option value="NL">🇳🇱 Netherlands</option>
+      <option value="">🌐 Any</option>
+    </select>
+    <button onclick="loadLibrary()">↻ Refresh</button>
+    <div class="hint">Drag a station onto a preset slot below. Logos provided by SixBack station proxy.</div>
+  </div>
+  <div class="lib-grid" id="lib-grid">
+    <div class="lib-empty">Loading…</div>
+  </div>
 </div>
 
 <div id="speakers-host"></div>
@@ -374,7 +440,26 @@
 <div class="toast" id="toast"></div>
 
 <script>
-let STATE = { speakers: [], editing: null, dragSource: null, _lastDragEndedAt: 0 };
+let STATE = { speakers: [], editing: null, dragSource: null, _lastDragEndedAt: 0,
+               libOpen: false, libResults: [], libSearchTimer: null,
+               // Devices whose ESP-store has been edited but not yet pushed to hardware.
+               // Set on swap/library-drop, cleared on successful push-all.
+               // Page reload resets (assumed clean) — this is intentional, see UX docs.
+               dirtySpeakers: new Set() };
+
+// Station library proxy bases. Tried in order until one returns 200.
+// Override head-of-list via DevTools or localStorage:
+//   localStorage.SIXBACK_STATIONS_BASE = 'http://10.10.11.113:8789/sixback/stations'
+// Default: prefer install.busware.de (works from anywhere once Apache
+// snippet is live), fall back to direct Pi5 LAN address while Apache
+// isn't deployed yet.
+const STATIONS_API_BASES = [
+  window.SIXBACK_STATIONS_BASE,
+  localStorage.getItem('SIXBACK_STATIONS_BASE'),
+  'https://install.busware.de/sixback/stations',
+  'http://10.10.11.113:8789/sixback/stations',
+].filter(Boolean);
+let STATIONS_API_BASE = STATIONS_API_BASES[0];   // updated to whichever base actually works
 
 // ---- Toast ----
 function toast(msg, kind='success') {
@@ -895,7 +980,10 @@ function actionButtonsHtml(s) {
   const revert = (s.owned_by_us || s.status === 'migrated')
     ? `<button class="danger" onclick="actSpeaker('${s.device_id}','revert')">↩ Revert to original Bose</button>`
     : '';
-  return migrate + revert +
+  const power = `<button class="pwr" id="pwr-${s.device_id}" title="Toggle speaker power" onclick="togglePower('${s.device_id}')">Power</button>`;
+  const vol = `<button class="vol" title="Volume down (1 step)" onclick="sendKey('${s.device_id}','VOLUME_DOWN')">Vol −</button>`
+            + `<button class="vol" title="Volume up (1 step)"   onclick="sendKey('${s.device_id}','VOLUME_UP')">Vol +</button>`;
+  return power + vol + migrate + revert +
     `<button onclick="actSpeaker('${s.device_id}','reboot')">⟲ Reboot</button>` +
     `<button onclick="actSpeaker('${s.device_id}','refresh')">🔄 Status</button>` +
     `<button title="Download diagnostic snapshot — BMX endpoints + Telnet config — to send us for unsupported-source debugging" onclick="downloadSnapshot('${s.device_id}')">📋 Snapshot</button>` +
@@ -918,6 +1006,14 @@ function speakerCard(s, myBase) {
       <div class="presets" id="presets-${s.device_id}">
         <div style="grid-column:1/-1;color:var(--mute);font-size:.85em">Loading presets…</div>
       </div>
+      <div class="preset-actions" id="push-actions-${s.device_id}"
+           style="margin-top:.55em;display:none;justify-content:flex-end;gap:.4em;align-items:center">
+        <span style="color:var(--mute);font-size:.85em">⚠ slots edited — speaker hardware out of sync</span>
+        <button class="primary" id="push-${s.device_id}" onclick="pushAllPresets('${s.device_id}')"
+                title="Write all 6 store slots to the speaker hardware via /select + long-press">
+          📤 Push 1–6 to speaker
+        </button>
+      </div>
     </div>`;
 }
 
@@ -925,17 +1021,20 @@ async function loadPresetsFor(devId) {
   try {
     let r = await api('/api/speaker/'+encodeURIComponent(devId)+'/presets');
     let presets = r.presets || [];
-    // Auto-import: wenn der Store fuer einen Slot leer ist, der Speaker dort
-    // aber etwas hat, vom Speaker importieren. Vorher nur bei ALLE-Slots-leer
-    // — das verfehlte den Fall "5 TUNEIN im Store + Slot 6 DLNA nur am
-    // Speaker" (siehe Kueche 2026-05-21: Slot 6 wurde als "empty" angezeigt
-    // obwohl der DLNA-Preset im Speaker-Cache lag). import-from-device ist
-    // idempotent: setSlots() ueberschreibt mit Speaker-State, und der ist
-    // bei den TUNEIN-Slots identisch zum Store (vorausgesetzt vorheriger
-    // push-to-device war erfolgreich).
-    const anyEmpty = presets.some(p => !p.source || p.source === 'EMPTY');
+    // Auto-import nur wenn der Store komplett leer ist (Erstkontakt, Migrate-
+    // from-Bose-Cloud). Frueheres "anyEmpty" war zu aggressiv: hat User-Edits
+    // (Drag&Drop-Swap, library-set, gezieltes /clear) zuverlaessig
+    // ueberschrieben weil import-from-device::setSlots den GESAMTEN
+    // Slot-Vector ersetzt — siehe Emma swap 1↔2 2026-05-23, Store
+    // re-flipped zu OLD wenn Push noch nicht angekommen war.
+    //
+    // Konsequenz: Slot 6 OPAQUE bleibt unsichtbar bis User einmal manuell
+    // "Import from speaker" triggert (TODO als sep. Button). Tradeoff
+    // bewusst gewaehlt: Stille Daten-Korruption ist schlimmer als ein
+    // Missing-Slot 6 nach Erstmigration.
     const noPresets = presets.length === 0;
-    if (anyEmpty || noPresets) {
+    const allEmpty = presets.length > 0 && presets.every(p => !p.source || p.source === 'EMPTY');
+    if (noPresets || allEmpty) {
       try {
         const ir = await api('/api/speaker/'+encodeURIComponent(devId)+'/presets/import-from-device',
                               {method:'POST'});
@@ -949,6 +1048,12 @@ async function loadPresetsFor(devId) {
     if (!host) return;
     const sorted = presets.slice().sort((a,b) => (a.slot||0) - (b.slot||0));
     host.innerHTML = sorted.map((p, i) => presetCard(devId, p, i)).join('');
+    // Index slots for fast now-playing match lookups
+    STATE.slotIndex = STATE.slotIndex || {};
+    sorted.forEach((p, i) => { STATE.slotIndex[`${devId}#${i+1}`] = p; });
+    // Re-apply playing highlight + push-button visibility after re-render
+    applyPlayingHighlight(devId);
+    updatePushVisibility(devId);
   } catch(e) { /* ignore */ }
 }
 
@@ -966,12 +1071,33 @@ function presetCard(devId, p, idx) {
   if (opaque) {
     pname = p.name || ('['+(p.opaqueSourceName||'opaque')+'] preset');
     meta = 'Passthrough: '+(p.opaqueSourceName || 'unknown source')+' ('+(p.rawContentItemBytes||0)+' B)';
-    cover = `<div class="pcover-placeholder" title="speaker-managed">🔒</div>`;
+    // DLNA-Slots haben oft <containerArt>http://lan-dlna-server/...</containerArt>
+    // im rawContentItem. Wenn das vorhanden ist, versuche es als Bild zu laden
+    // (Browser muss im selben LAN sein); onerror fällt auf 🔒 zurück.
+    if (p.containerArt) {
+      cover = `<img class="pcover" src="${esc(p.containerArt)}" alt="" loading="lazy"
+                    onerror="this.outerHTML='<div class=&quot;pcover-placeholder&quot; title=&quot;speaker-managed&quot;>🔒</div>'">`;
+    } else {
+      cover = `<div class="pcover-placeholder" title="speaker-managed">🔒</div>`;
+    }
   } else if (!empty) {
     pname = p.name;
     meta = p.source === 'TUNEIN' ? 'TuneIn '+p.stationId : 'URL: '+p.streamUrl;
-    cover = p.imageUrl
-      ? `<img class="pcover" src="${esc(p.imageUrl)}" alt="" loading="lazy" onerror="this.outerHTML='<div class=&quot;pcover-placeholder&quot;>📻</div>'">`
+    // Auto-derive logo URL when imageUrl is empty:
+    //   TUNEIN with valid stationId -> proxy resolves via OPML Describe +
+    //     downloads the timestamped .jpg, returns a 96x96 PNG.
+    //   LOCAL_INTERNET_RADIO with a name -> proxy searches RadioBrowser by
+    //     name (forum-user case: "Bayern 3", "HR4", …), returns best-hit
+    //     favicon resized to 96x96.
+    //   else -> placeholder
+    let img = p.imageUrl || '';
+    if (!img && p.source === 'TUNEIN' && /^[sgptcr]\d+$/i.test(p.stationId || '')) {
+      img = `${STATIONS_API_BASE}/tunein-logo/${p.stationId}`;
+    } else if (!img && p.source === 'LOCAL_INTERNET_RADIO' && p.name && p.name.length >= 2) {
+      img = `${STATIONS_API_BASE}/by-name?q=${encodeURIComponent(p.name)}&country=DE`;
+    }
+    cover = img
+      ? `<img class="pcover" src="${esc(img)}" alt="" loading="lazy" onerror="this.outerHTML='<div class=&quot;pcover-placeholder&quot;>📻</div>'">`
       : `<div class="pcover-placeholder">📻</div>`;
   } else {
     cover = `<div class="pcover-placeholder" title="drop a station here">＋</div>`;
@@ -999,25 +1125,58 @@ function presetCard(devId, p, idx) {
 // Click-Handler suppress'd den Edit-Modal wenn ein Drag gerade beendet wurde.
 STATE._lastDragEndedAt = 0;
 
-function onPresetClick(ev, devId, slot, p) {
+async function onPresetClick(ev, devId, slot, p) {
   // HTML5 dispatcht click NACH dragend wenn der Drag im selben Element startete
   // und endete. Suppress click für 200ms nach dragend.
   if (Date.now() - STATE._lastDragEndedAt < 200) return;
-  editPreset(devId, slot, p);
+  // Click = play (wie eine Hardware-Taste am Speaker). Editing passiert
+  // ausschliesslich via Drag&Drop von der Library oder zwischen Slots.
+  if (!p || p.source === 'EMPTY' || !p.source) { toast('Slot is empty — drop a station from the library to set it'); return; }
+  try {
+    await api(`/api/speaker/${encodeURIComponent(devId)}/play-preset/${slot}`, {method:'POST'});
+    toast(`▶ Playing slot ${slot}`);
+    kickPoll(devId);
+  } catch(e) {
+    toast('Play failed: '+e.message);
+  }
 }
 
 function onPresetDragStart(ev) {
   const el = ev.currentTarget;
   if (el.getAttribute('draggable') !== 'true') { ev.preventDefault(); return; }
-  STATE.dragSource = {
-    dev: el.dataset.dev,
-    slot: parseInt(el.dataset.slot, 10),
-    source: el.dataset.source,
-  };
+  const dev = el.dataset.dev, slot = parseInt(el.dataset.slot, 10);
+  const p = (STATE.slotIndex && STATE.slotIndex[`${dev}#${slot}`]) || {};
+  STATE.dragSource = { kind: 'slot', dev, slot, source: el.dataset.source };
   el.classList.add('dragging');
-  ev.dataTransfer.effectAllowed = 'move';
-  // Firefox braucht setData um Drag zu starten
-  try { ev.dataTransfer.setData('text/plain', `${STATE.dragSource.dev}#${STATE.dragSource.slot}`); } catch(e){}
+  ev.dataTransfer.effectAllowed = 'copyMove';
+  // Rich payload for cross-window + cross-tab drops:
+  //   - JSON in our own MIME type (other SixBack windows recognise it)
+  //   - JSON in application/json (generic readers)
+  //   - text/plain summary (any plain text consumer)
+  //   - DownloadURL (Chrome-specific) so drop on the desktop saves the .json
+  //   - text/uri-list pointing to the export endpoint (other browsers)
+  const payload = {
+    sixback_preset: 1,
+    exported_from: dev,
+    slot,
+    source: p.source || el.dataset.source,
+    name: p.name || '',
+    stationId: p.stationId || '',
+    streamUrl: p.streamUrl || '',
+    imageUrl: p.imageUrl || '',
+  };
+  const json = JSON.stringify(payload);
+  const safe = (p.name || ('slot-'+slot)).replace(/[^A-Za-z0-9_-]/g,'-').slice(0,32);
+  const exportUrl = window.location.origin
+                  + `/api/speaker/${encodeURIComponent(dev)}/preset/${slot}/export`;
+  try { ev.dataTransfer.setData('application/x-sixback-preset+json', json); } catch(e){}
+  try { ev.dataTransfer.setData('application/json', json); } catch(e){}
+  try { ev.dataTransfer.setData('text/plain',
+        `SixBack preset slot ${slot}: ${p.name || '(empty)'}\n${exportUrl}`); } catch(e){}
+  try { ev.dataTransfer.setData('text/uri-list', exportUrl); } catch(e){}
+  // Chrome-only: "DownloadURL:mime:filename:url"
+  try { ev.dataTransfer.setData('DownloadURL',
+        `application/json:${safe}.json:${exportUrl}`); } catch(e){}
 }
 
 function onPresetDragEnd(ev) {
@@ -1030,19 +1189,27 @@ function onPresetDragEnd(ev) {
 }
 
 function onPresetDragOver(ev) {
-  if (!STATE.dragSource) return;
+  // External drags (cross-window MIME or files from desktop) have no
+  // STATE.dragSource — accept them when the dataTransfer carries something
+  // we can understand. Without preventDefault() the browser refuses the drop.
+  const dt = ev.dataTransfer;
+  const isExternal = !STATE.dragSource &&
+    (Array.from(dt.types || []).includes('application/x-sixback-preset+json') ||
+     Array.from(dt.types || []).includes('Files'));
+  if (!STATE.dragSource && !isExternal) return;
   ev.preventDefault();   // erlaubt Drop
   const el = ev.currentTarget;
   const tgtSource = el.dataset.source;
-  // Drop auf eigenen Slot = noop, keine Visualisierung
-  if (el.dataset.dev === STATE.dragSource.dev &&
+  // Slot-from-slot: drop auf eigenen Slot = noop
+  if (STATE.dragSource && STATE.dragSource.kind === 'slot' &&
+      el.dataset.dev === STATE.dragSource.dev &&
       parseInt(el.dataset.slot,10) === STATE.dragSource.slot) return;
   if (tgtSource === 'OPAQUE') {
     el.classList.add('drop-blocked');
-    ev.dataTransfer.dropEffect = 'none';
+    dt.dropEffect = 'none';
   } else {
     el.classList.add('drop-target');
-    ev.dataTransfer.dropEffect = 'move';
+    dt.dropEffect = (STATE.dragSource && STATE.dragSource.kind === 'slot') ? 'move' : 'copy';
   }
 }
 
@@ -1050,18 +1217,113 @@ function onPresetDragLeave(ev) {
   ev.currentTarget.classList.remove('drop-target','drop-blocked');
 }
 
+// ---- Apply a preset payload (from cross-window drag, file drop, etc.) ----
+async function applyExternalPreset(payload, dst) {
+  if (!payload || payload.sixback_preset !== 1) {
+    toast('Drop ignored — not a SixBack preset payload');
+    return;
+  }
+  if (payload.source === 'OPAQUE') {
+    toast('OPAQUE/DLNA preset cannot be imported via drag — re-record at speaker');
+    return;
+  }
+  if (!payload.source || payload.source === 'EMPTY') {
+    toast('Drop ignored — empty payload');
+    return;
+  }
+  try {
+    const body = {
+      source: payload.source,
+      name: payload.name || '',
+      stationId: payload.stationId || '',
+      streamUrl: payload.streamUrl || '',
+      imageUrl: payload.imageUrl || '',
+    };
+    const r = await api(`/api/speaker/${encodeURIComponent(dst.dev)}/preset/${dst.slot}`,
+                       {method:'PUT', headers:{'Content-Type':'application/json'},
+                        body: JSON.stringify(body)});
+    if (r && r.ok) {
+      markDirty(dst.dev);
+      toast(`Imported "${payload.name || payload.source}" → slot ${dst.slot}` +
+            (payload.exported_from ? ` (from ${payload.exported_from})` : ''));
+      loadPresetsFor(dst.dev);
+      kickPoll(dst.dev);
+    } else {
+      toast('Import failed: '+(r && r.error || 'unknown'));
+    }
+  } catch(e) {
+    toast('Import failed: '+e.message);
+  }
+}
+
 async function onPresetDrop(ev) {
   ev.preventDefault();
   const el = ev.currentTarget;
   el.classList.remove('drop-target','drop-blocked');
-  const src = STATE.dragSource;
-  if (!src) return;
   const dst = { dev: el.dataset.dev, slot: parseInt(el.dataset.slot, 10) };
-  if (src.dev === dst.dev && src.slot === dst.slot) return;
   if (el.dataset.source === 'OPAQUE') {
     toast('Speaker-managed slot — re-record at speaker via long-press');
     return;
   }
+
+  // External payload route: cross-window drag (different tab/window of the
+  // same or another SixBack), or .json file dropped from the desktop.
+  // Use this whenever STATE.dragSource isn't a same-tab slot/library source.
+  const src = STATE.dragSource;
+  const ourMime = ev.dataTransfer.getData('application/x-sixback-preset+json');
+  const fileList = ev.dataTransfer.files;
+  if (!src) {
+    // Cross-window MIME
+    if (ourMime) {
+      try { return applyExternalPreset(JSON.parse(ourMime), dst); }
+      catch(e) { toast('Cross-window payload malformed'); return; }
+    }
+    // File drop
+    if (fileList && fileList.length > 0) {
+      const f = fileList[0];
+      try {
+        const text = await f.text();
+        return applyExternalPreset(JSON.parse(text), dst);
+      } catch(e) { toast('Dropped file is not a SixBack preset JSON'); return; }
+    }
+    return;
+  }
+  const dst = { dev: el.dataset.dev, slot: parseInt(el.dataset.slot, 10) };
+  if (el.dataset.source === 'OPAQUE') {
+    toast('Speaker-managed slot — re-record at speaker via long-press');
+    return;
+  }
+
+  if (src.kind === 'library') {
+    // Library station -> set slot as LOCAL_INTERNET_RADIO
+    toast(`Setting "${src.name}" on slot ${dst.slot}…`);
+    try {
+      const r = await api(`/api/speaker/${encodeURIComponent(dst.dev)}/preset/${dst.slot}`, {
+        method: 'PUT',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({
+          source: 'LOCAL_INTERNET_RADIO',
+          name: src.name,
+          streamUrl: src.streamUrl,
+          imageUrl: src.imageUrl || '',
+        }),
+      });
+      if (r && r.ok) {
+        markDirty(dst.dev);
+        toast(`"${src.name}" set on slot ${dst.slot} — click "Push 1–6 to speaker" to write to hardware`);
+        loadPresetsFor(dst.dev);
+        kickPoll(dst.dev);
+      } else {
+        toast('Set failed: '+(r && r.error || 'unknown'));
+      }
+    } catch (e) {
+      toast('Set failed: '+e.message);
+    }
+    return;
+  }
+
+  // Slot-from-slot swap (existing behavior)
+  if (src.dev === dst.dev && src.slot === dst.slot) return;
   toast('Swapping…');
   try {
     const r = await api('/api/preset/swap', {
@@ -1070,16 +1332,298 @@ async function onPresetDrop(ev) {
       body: JSON.stringify({ src: {dev:src.dev,slot:src.slot}, dst })
     });
     if (r && r.ok) {
-      toast(`Swap queued (${r.enqueued||0} pushes) — speakers update in ~7s/slot`);
-      // beide Speaker-Cards neu laden
+      markDirty(src.dev);
+      if (dst.dev !== src.dev) markDirty(dst.dev);
+      toast(`Swap done (store only) — click "Push 1–6 to speaker" on affected speakers to write to hardware`);
       loadPresetsFor(src.dev);
-      if (dst.dev !== src.dev) loadPresetsFor(dst.dev);
+      kickPoll(src.dev);
+      if (dst.dev !== src.dev) {
+        loadPresetsFor(dst.dev);
+        kickPoll(dst.dev);
+      }
     } else {
       toast('Swap failed: '+(r && r.error || 'unknown'));
     }
   } catch (e) {
     toast('Swap failed: '+e.message);
   }
+}
+
+// ---- Speaker key helpers ----
+// Staggered poll: nach einer User-Aktion (Click/Power/Drop) holen wir den
+// Status SOFORT + nach kurzem Settle + nach laengerem Settle. Bose-Speaker
+// brauchen ~1-3s bis SCMUDC-Events das neue State reflektieren. Drei
+// gestaffelte Polls geben optisch instantes Feedback ohne auf den 10s-
+// Tick zu warten.
+function kickPoll(devId) {
+  pollNowPlaying(devId);                       // optimistic, may still show old
+  setTimeout(()=>pollNowPlaying(devId),  800); // SCMUDC usually here
+  setTimeout(()=>pollNowPlaying(devId), 2500); // slow speakers (Küche)
+}
+
+async function sendKey(devId, keyName) {
+  try {
+    const r = await api(`/api/speaker/${encodeURIComponent(devId)}/key/${keyName}`, {method:'POST'});
+    if (!(r && r.ok)) toast(`${keyName} failed: ${(r && r.error) || 'unknown'}`);
+  } catch(e) {
+    toast(`${keyName} failed: ${e.message}`);
+  }
+  kickPoll(devId);
+}
+
+async function togglePower(devId) {
+  await sendKey(devId, 'POWER');
+}
+
+// ---- Now-playing poll + highlight ----
+// STATE.nowPlaying: deviceId -> { source, station_id, stream_url, play_status }
+STATE.nowPlaying = {};
+STATE.nowPlayingTimer = null;
+
+STATE.liveFallbackAt = {};   // devId -> last live-fallback timestamp (ms)
+const LIVE_FALLBACK_MIN_MS = 30000;  // rate-limit: at most once per 30 s per speaker
+
+async function pollNowPlaying(devId) {
+  try {
+    // Primary: SCMUDC-event cache (instant). Fallback: direct Bose-poll (slow
+    // ~200-1500ms but works when cache is cold, e.g. after S3 reboot before
+    // any speaker state-change has reached us).
+    const resp = await api(`/api/speaker/${encodeURIComponent(devId)}/now-playing`);
+    let np = (resp && resp.now) || {};
+    const cacheEmpty = !np.source && !np.title;
+    if (cacheEmpty) {
+      const last = STATE.liveFallbackAt[devId] || 0;
+      if (Date.now() - last > LIVE_FALLBACK_MIN_MS) {
+        STATE.liveFallbackAt[devId] = Date.now();
+        try {
+          const live = await api(`/api/speaker/${encodeURIComponent(devId)}/now-playing-live`);
+          if (live && live.source) {
+            // Map live-shape (source/name/play_status/station_id/stream_url)
+            // to cache-shape (source/title/play_state/...).
+            np = {
+              source: live.source,
+              title: live.name,
+              play_state: live.play_status,
+              // optional extras kept for completeness
+              station_id: live.station_id,
+              stream_url: live.stream_url,
+            };
+          }
+        } catch(e) { /* live fallback also failed — leave np empty */ }
+      }
+    }
+    STATE.nowPlaying[devId] = np;
+    applyPlayingHighlight(devId);
+    // Update power button visual when playing
+    const btn = document.getElementById('pwr-'+devId);
+    if (btn) {
+      const ps = (np.play_state || '').toUpperCase();
+      const src = (np.source || '').toUpperCase();
+      const isOn = src && src !== 'STANDBY' && src !== 'INVALID_SOURCE' && ps !== 'STOP_STATE';
+      btn.classList.toggle('on', isOn);
+    }
+  } catch(e) { /* speaker offline / endpoint error — silent */ }
+}
+
+function applyPlayingHighlight(devId) {
+  const np = STATE.nowPlaying[devId];
+  const host = document.getElementById('presets-'+devId);
+  if (!host) return;
+  host.querySelectorAll('.preset').forEach(el => el.classList.remove('playing'));
+  if (!np) return;
+  const src = (np.source || '').toUpperCase();
+  const ps  = (np.play_state || '').toUpperCase();
+  if (!src || src === 'STANDBY' || src === 'INVALID_SOURCE') return;
+  if (ps === 'STOP_STATE' || ps === 'PAUSE_STATE') return;
+  const title = (np.title || '').trim();
+  // SCMUDC-event-cache doesn't include stationId/streamUrl, so we match by
+  // title (= itemName in /now_playing XML). For TUNEIN/LOCAL_INTERNET_RADIO
+  // the title matches the preset's display name. Multi-station-with-same-
+  // name collisions are rare in the 6 hardware slots.
+  const tiles = host.querySelectorAll('.preset');
+  tiles.forEach(t => {
+    const slot = parseInt(t.dataset.slot, 10);
+    const tgt  = t.dataset.source;
+    if (!tgt || tgt === 'EMPTY') return;
+    const p = STATE.slotIndex && STATE.slotIndex[`${devId}#${slot}`];
+    if (!p) return;
+    let match = false;
+    if (title && p.name && title === p.name) match = true;
+    else if (src === 'STORED_MUSIC' && p.source === 'OPAQUE') match = true;
+    if (match) t.classList.add('playing');
+  });
+}
+
+function startNowPlayingPoll() {
+  if (STATE.nowPlayingTimer) clearInterval(STATE.nowPlayingTimer);
+  const tick = () => {
+    (STATE.speakers || []).forEach(s => {
+      if (s.device_id) pollNowPlaying(s.device_id);
+    });
+  };
+  // First tick after a short delay so initial page-render isn't slowed by
+  // 3 simultaneous fetches. Then every 10 s.
+  setTimeout(tick, 800);
+  STATE.nowPlayingTimer = setInterval(tick, 10000);
+}
+
+// ---- Dirty tracking (push-button visibility) ----
+function markDirty(devId) {
+  STATE.dirtySpeakers.add(devId);
+  updatePushVisibility(devId);
+}
+function clearDirty(devId) {
+  STATE.dirtySpeakers.delete(devId);
+  updatePushVisibility(devId);
+}
+function updatePushVisibility(devId) {
+  const el = document.getElementById('push-actions-'+devId);
+  if (!el) return;
+  el.style.display = STATE.dirtySpeakers.has(devId) ? 'flex' : 'none';
+}
+
+// ---- Bulk Push to speaker ----
+async function pushAllPresets(devId) {
+  const btn = document.getElementById('push-'+devId);
+  if (!btn) return;
+  if (!confirm('Write all 6 slots from SixBack store to the speaker hardware?\n\n' +
+               'Each slot takes ~13s (select + 8s settle + long-press). ' +
+               '6 slots ≈ 75s total. The speaker should be powered on (not in standby) ' +
+               'for best reliability.')) return;
+  const orig = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '⏳ pushing…';
+  try {
+    const r = await api(`/api/speaker/${encodeURIComponent(devId)}/push-all`, {method:'POST'});
+    if (r && r.ok) {
+      const eta = r.eta_seconds || 0;
+      const synced = r.synced || 0;
+      const enq = r.enqueued || 0;
+      if (enq === 0) {
+        toast(synced > 0 ? `✓ All slots already in sync (${synced} verified)`
+                         : 'Nothing to push — slots all empty/opaque');
+        btn.disabled = false;
+        btn.textContent = orig;
+        clearDirty(devId);
+      } else {
+        const skipNote = synced > 0 ? `, ${synced} already-synced` : '';
+        toast(`Pushing ${enq} of 6 slots → ~${eta}s${skipNote}`);
+        const lockMs = Math.max((eta + 10) * 1000, 30000);
+        setTimeout(() => {
+          btn.disabled = false;
+          btn.textContent = orig;
+          clearDirty(devId);
+        }, lockMs);
+      }
+    } else {
+      toast('Push failed: '+(r && r.error || 'unknown'));
+      btn.disabled = false;
+      btn.textContent = orig;
+    }
+  } catch (e) {
+    toast('Push failed: '+e.message);
+    btn.disabled = false;
+    btn.textContent = orig;
+  }
+}
+
+// ---- Library drawer ----
+function toggleLibrary() {
+  const d = document.getElementById('lib-drawer');
+  STATE.libOpen = !STATE.libOpen;
+  d.classList.toggle('open', STATE.libOpen);
+  document.getElementById('lib-toggle').textContent =
+    STATE.libOpen ? '📻 Hide stations' : '📻 Browse stations';
+  if (STATE.libOpen && STATE.libResults.length === 0) loadLibrary();
+}
+
+function onLibrarySearchInput() {
+  if (STATE.libSearchTimer) clearTimeout(STATE.libSearchTimer);
+  STATE.libSearchTimer = setTimeout(loadLibrary, 350);
+}
+
+async function loadLibrary() {
+  const q = document.getElementById('lib-q').value.trim();
+  const country = document.getElementById('lib-country').value;
+  const grid = document.getElementById('lib-grid');
+  grid.innerHTML = '<div class="lib-empty">Loading…</div>';
+  const pathQ = (q.length >= 2)
+    ? `/search?q=${encodeURIComponent(q)}&limit=24` + (country ? `&country=${country}` : '')
+    : `/popular?limit=24` + (country ? `&country=${country}` : '');
+  let lastErr = null;
+  for (const base of STATIONS_API_BASES) {
+    try {
+      const r = await fetch(base + pathQ, { mode: 'cors' });
+      if (!r.ok) { lastErr = new Error('HTTP '+r.status); continue; }
+      const body = await r.json();
+      STATE.libResults = body.results || [];
+      STATIONS_API_BASE = base;   // remember winner for logo URLs
+      renderLibrary();
+      return;
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  grid.innerHTML = `<div class="lib-empty">Station proxy not reachable.<br>
+    Last error: ${esc(lastErr ? lastErr.message : 'unknown')}<br><br>
+    Tried: <code>${esc(STATIONS_API_BASES.join(', '))}</code><br>
+    Override via DevTools: <code>localStorage.SIXBACK_STATIONS_BASE='http://...'</code></div>`;
+}
+
+function renderLibrary() {
+  const grid = document.getElementById('lib-grid');
+  if (STATE.libResults.length === 0) {
+    grid.innerHTML = '<div class="lib-empty">No stations found.</div>';
+    return;
+  }
+  grid.innerHTML = STATE.libResults.map(libTile).join('');
+}
+
+function libTile(s) {
+  const logoUrl = s.logo_url ? STATIONS_API_BASE + s.logo_url.replace(/^.*\/sixback\/stations/, '') : '';
+  const country = s.country || s.countrycode || '';
+  const meta = [country, s.codec, s.bitrate ? s.bitrate+'k' : ''].filter(Boolean).join(' · ');
+  // Encode payload into data-attributes so dragstart can reconstruct it
+  const payload = JSON.stringify({
+    name: s.name, streamUrl: s.stream_url,
+    imageUrl: logoUrl, uuid: s.uuid,
+  }).replace(/"/g,'&quot;');
+  return `
+    <div class="lib-tile" draggable="true" data-payload="${payload}"
+         ondragstart="onLibraryDragStart(event)" ondragend="onLibraryDragEnd(event)"
+         title="${esc(s.name)} — ${esc(meta)}">
+      ${logoUrl
+        ? `<img class="tile-logo" src="${esc(logoUrl)}" alt="" loading="lazy"
+                 onerror="this.outerHTML='<div class=&quot;tile-logo-ph&quot;>📻</div>'">`
+        : '<div class="tile-logo-ph">📻</div>'}
+      <div class="tile-name">${esc(s.name)}</div>
+      <div class="tile-meta">${esc(meta)}</div>
+    </div>`;
+}
+
+function onLibraryDragStart(ev) {
+  const el = ev.currentTarget;
+  let payload;
+  try { payload = JSON.parse(el.dataset.payload); }
+  catch(e) { ev.preventDefault(); return; }
+  STATE.dragSource = {
+    kind: 'library',
+    name: payload.name,
+    streamUrl: payload.streamUrl,
+    imageUrl: payload.imageUrl,
+    uuid: payload.uuid,
+  };
+  el.classList.add('dragging');
+  ev.dataTransfer.effectAllowed = 'copy';
+  try { ev.dataTransfer.setData('text/plain', `lib:${payload.uuid}`); } catch(e){}
+}
+
+function onLibraryDragEnd(ev) {
+  ev.currentTarget.classList.remove('dragging');
+  STATE.dragSource = null;
+  STATE._lastDragEndedAt = Date.now();
+  document.querySelectorAll('.preset.drop-target, .preset.drop-blocked')
+    .forEach(e => e.classList.remove('drop-target','drop-blocked'));
 }
 
 // ---- Speaker actions ----
@@ -1497,7 +2041,7 @@ function esc(s) { return String(s||'').replace(/[&<>"]/g, c=>({'&':'&amp;','<':'
 
 // ---- Boot ----
 loadStatus();
-loadSpeakers();
+loadSpeakers().then(() => startNowPlayingPoll());
 setInterval(loadStatus, 10000);
 // Online-Update: nicht automatisch checken (kein Polling von extern), nur
 // status sync ziehen — falls zwischenzeitlich ein Install laeuft, zeigt
