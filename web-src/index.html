@@ -1052,7 +1052,19 @@ function classify(s, myBase) {
     return ['stale', 'ours, but URL stale — will be repaired on reboot'];
   }
   if (s.status === 'not_migrated') return ['original', 'original Bose cloud (deprecated)'];
-  if (s.status === 'migrated')     return ['foreign',  'migrated to foreign server'];
+  if (s.status === 'migrated') {
+    // If the foreign cloud is another SixBack on the LAN, name it — the
+    // backend's `auto-release` (speaker_inventory.cpp) flips owned_by_us
+    // to false when cloud_url drifts away from our own base_url, leaving
+    // status=migrated + owned=false in this branch. Showing the peer-IP
+    // makes the situation legible instead of looking like an error.
+    if (s.cloud_url && s.cloud_url.indexOf('http://') === 0 && s.cloud_url !== myBase) {
+      const m = s.cloud_url.match(/^http:\/\/([^:/]+)/);
+      const peer = m ? m[1] : s.cloud_url;
+      return ['foreign',  'claimed by peer @ ' + peer];
+    }
+    return ['foreign',  'migrated to foreign server'];
+  }
   if (s.status === 'unknown')      return ['unknown',  'unknown'];
   return ['unknown', s.status || '?'];
 }

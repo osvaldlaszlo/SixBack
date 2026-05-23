@@ -180,6 +180,29 @@ bool waitForSpeakerBack_(const String& ip, uint32_t timeoutMs) {
     return false;
 }
 
+// Peer detection — wenn ein Speaker bereits auf einen anderen SixBack im LAN
+// pollt, sollen wir ihn NICHT zurueckclaimen (verhindert Ping-Pong wenn zwei
+// Sticks beide Auto-Mode aktiv haben). Probe: GET cloudUrl + "/" mit kurzem
+// Timeout — die SixBack-Cloud-Mock liefert auf / ein HTML mit dem Marker
+// "SixBack Cloud-Mock". Falls die URL ein anderer Custom-Cloud-Server ist
+// (Pi5-Mock z.B.), antwortet er nicht mit diesem Marker → nicht-peer →
+// regulaere Eligibility.
+//
+// User kann ueber den Manual-Migrate-Endpoint (/api/speaker/<id>/migrate)
+// einen Peer-Speaker weiter explizit uebernehmen, das ist ein bewusster
+// User-Klick und respektiert die Auto-Mode-Skip-Logik nicht.
+bool isPeerSixBackCloud_(const String& url) {
+    if (url.length() == 0 || !url.startsWith("http://")) return false;
+    HTTPClient http;
+    http.setConnectTimeout(1500);
+    http.setTimeout(1500);
+    if (!http.begin(url + "/")) return false;
+    int code = http.GET();
+    String body = (code == 200) ? http.getString() : String("");
+    http.end();
+    return (code == 200) && (body.indexOf("SixBack") >= 0);
+}
+
 bool isEligible_(const Speaker& s, const String& myBase) {
     if (s.ownedByUs) return false;
     if (s.cloudUrl == myBase) return false;
@@ -197,6 +220,14 @@ bool isEligible_(const Speaker& s, const String& myBase) {
     bool fwOk = s.firmware.indexOf("27.0.6.") >= 0
              || s.firmware.indexOf("27.0.3.") >= 0;
     if (!fwOk) return false;
+    // Peer-aware (v0.7.5): wenn cloudUrl auf einen anderen SixBack-Stick
+    // im LAN zeigt, nicht zurueckclaimen.
+    if (s.cloudUrl.length() > 0 && s.cloudUrl != myBase &&
+        isPeerSixBackCloud_(s.cloudUrl)) {
+        Serial.printf("[auto] skip %s (%s): peer SixBack at %s already owns it\n",
+                      s.name.c_str(), s.ip.c_str(), s.cloudUrl.c_str());
+        return false;
+    }
     return true;
 }
 
