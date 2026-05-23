@@ -384,29 +384,6 @@ void handleMigrate(AsyncWebServerRequest* req) {
               "\"message\":\"migration started in background — refresh speaker card in ~90s to see result (Bose-Reboot + Telnet-Settle)\"}");
 }
 
-void handleRevert(AsyncWebServerRequest* req) {
-    String id = req->pathArg(0);
-    auto& inv = sixback::SpeakerInventory::instance();
-    String ip;
-    {
-        sixback::SpeakerInventory::LockGuard g(inv);
-        auto* sp = inv.findById(id);
-        if (!sp) { req->send(404, "application/json", "{\"error\":\"unknown deviceId\"}"); return; }
-        ip = sp->ip;
-    }
-    auto* job = new MigrateJob_{id, ip, myBaseUrl(), /*doMigrate=*/false};
-    BaseType_t r = xTaskCreate(migrateRevertWorker_, "bg-revert", 4096, job,
-                                tskIDLE_PRIORITY + 1, nullptr);
-    if (r != pdPASS) {
-        delete job;
-        req->send(503, "application/json", "{\"error\":\"task spawn failed\"}");
-        return;
-    }
-    req->send(202, "application/json",
-              "{\"ok\":true,\"queued\":true,"
-              "\"message\":\"revert started in background — refresh speaker card in ~90s to see result (Bose-Reboot + Telnet-Settle)\"}");
-}
-
 void handleReboot(AsyncWebServerRequest* req) {
     String id = req->pathArg(0);
     auto& inv = sixback::SpeakerInventory::instance();
@@ -744,9 +721,20 @@ static void doPush_(const PushPresetJob_& job) {
         // dieser Speaker (Emma SoundTouch 10 FW 27.0.3). Empty fuer beide
         // Source-Typen scheint zuverlaessig zu funktionieren.
         const char* srcAcct = "";
+        // Per-source `type` attribute. Verified empirically against Emma
+        // (ST10, FW 27.0.3) on 2026-05-23:
+        //   TUNEIN  + type="stationurl" -> plays + slot saves correctly
+        //   LOCAL_INTERNET_RADIO + type="stationurl" -> /select 200 but
+        //       speaker dumps the ContentItem (now_playing returns empty
+        //       with art SHOW_DEFAULT_IMAGE, no audio)
+        //   LOCAL_INTERNET_RADIO + type="url" -> ContentItem echoes back,
+        //       speaker starts streaming the URL.
+        const char* ciType =
+            (job.p.source == sixback::PresetSource::TUNEIN) ? "stationurl" : "url";
         String ci = "<ContentItem source=\"";
         ci += sixback::presetSourceToStr(job.p.source);
-        ci += "\" type=\"stationurl\" location=\"";
+        ci += "\" type=\""; ci += ciType;
+        ci += "\" location=\"";
         if (job.p.source == sixback::PresetSource::TUNEIN) {
             ci += "/v1/playback/station/" + job.p.stationId;
         } else {
@@ -928,6 +916,78 @@ void handlePlayPreset(AsyncWebServerRequest* req) {
 }
 
 // -----------------------------------------------------------------------------
+// POST /api/speaker/{id}/play-source
+//   Spielt eine Media-Source ad-hoc ab, OHNE einen Preset-Slot anzufassen.
+//   Verwendet das gleiche /select-ContentItem wie doPush_ aber ohne den
+//   nachfolgenden Long-Press. Use-case: Library-Tile-Preview in der WebUI —
+//   User clickt ▶ auf einer Sidebar-Tile, hoert sofort den Stream im
+//   Speaker, kann dann mit D&D dauerhaft in einen Slot legen.
+// Body JSON:
+//   { "source": "TUNEIN" | "LOCAL_INTERNET_RADIO",
+//     "name":   "<itemName>",
+//     "stationId": "s24896",       (TUNEIN only)
+//     "streamUrl": "http://…"      (LOCAL_INTERNET_RADIO only) }
+// -----------------------------------------------------------------------------
+void handlePlaySource(AsyncWebServerRequest* req, JsonDocument& body) {
+    String id = req->pathArg(0);
+    auto& inv = sixback::SpeakerInventory::instance();
+    String spIp;
+    {
+        sixback::SpeakerInventory::LockGuard g(inv);
+        auto* sp = inv.findById(id);
+        if (!sp) { req->send(404, "application/json", "{\"error\":\"unknown deviceId\"}"); return; }
+        spIp = sp->ip;
+    }
+    String srcStr = String((const char*)(body["source"] | ""));
+    sixback::PresetSource src = sixback::presetSourceFromStr(srcStr);
+    if (src != sixback::PresetSource::TUNEIN &&
+        src != sixback::PresetSource::LOCAL_INTERNET_RADIO) {
+        req->send(400, "application/json",
+                  "{\"error\":\"source must be TUNEIN or LOCAL_INTERNET_RADIO\"}");
+        return;
+    }
+    String name      = (const char*)(body["name"]      | "");
+    String stationId = (const char*)(body["stationId"] | "");
+    String streamUrl = (const char*)(body["streamUrl"] | "");
+    if (src == sixback::PresetSource::TUNEIN && stationId.length() == 0) {
+        req->send(400, "application/json", "{\"error\":\"stationId required for TUNEIN\"}"); return;
+    }
+    if (src == sixback::PresetSource::LOCAL_INTERNET_RADIO && streamUrl.length() == 0) {
+        req->send(400, "application/json", "{\"error\":\"streamUrl required for LOCAL_INTERNET_RADIO\"}"); return;
+    }
+    HTTPClient http;
+    http.setReuse(false);
+    String url = "http://" + spIp + ":" + String(BOSE_BMX_PORT) + "/select";
+    int code = -1;
+    if (http.begin(url)) {
+        // Match doPush_ exactly: per-source `type` attribute. See doPush_
+        // comment block — TUNEIN uses "stationurl", LOCAL_INTERNET_RADIO
+        // uses "url" (the latter verified 2026-05-23 against Emma).
+        const char* ciType = (src == sixback::PresetSource::TUNEIN) ? "stationurl" : "url";
+        String ci = "<ContentItem source=\"";
+        ci += sixback::presetSourceToStr(src);
+        ci += "\" type=\""; ci += ciType;
+        ci += "\" location=\"";
+        if (src == sixback::PresetSource::TUNEIN) {
+            ci += "/v1/playback/station/" + stationId;
+        } else {
+            ci += streamUrl;
+        }
+        ci += "\" sourceAccount=\"\" isPresetable=\"true\"><itemName>" + name + "</itemName></ContentItem>";
+        http.addHeader("Content-Type", "text/xml");
+        code = http.POST(ci);
+        http.end();
+    }
+    JsonDocument out;
+    out["ok"]     = (code == 200);
+    out["select"] = code;
+    out["name"]   = name;
+    out["source"] = sixback::presetSourceToStr(src);
+    String b; serializeJson(out, b);
+    req->send(code == 200 ? 200 : 502, "application/json", b);
+}
+
+// -----------------------------------------------------------------------------
 // GET /api/speaker/{id}/now-playing-live
 //   Proxy fuer Speaker /now_playing (Live-Pull, nicht aus dem SCMUDC-Event-
 //   Cache). Gibt getrimmte JSON-Sicht zurueck mit location-derived
@@ -1057,6 +1117,41 @@ static bool fetchHardwarePresets_(const String& spIp, HwSlotInfo_ out[6]) {
         }
     }
     return true;
+}
+
+// -----------------------------------------------------------------------------
+// GET /api/speaker/{id}/hardware-presets
+//   Liest /presets vom Speaker live aus (kein Store-Touch) und liefert
+//   strukturierte JSON zurueck. Wird von der WebUI fuer die "on speaker:"-
+//   Zeile in der Slot-Karte gebraucht, parallel zum Store-Endpoint.
+// -----------------------------------------------------------------------------
+void handleGetHardwarePresets(AsyncWebServerRequest* req) {
+    String id = req->pathArg(0);
+    auto& inv = sixback::SpeakerInventory::instance();
+    String spIp;
+    {
+        sixback::SpeakerInventory::LockGuard g(inv);
+        auto* sp = inv.findById(id);
+        if (!sp) { req->send(404, "application/json", "{\"error\":\"unknown deviceId\"}"); return; }
+        spIp = sp->ip;
+    }
+    HwSlotInfo_ hw[6];
+    bool ok = fetchHardwarePresets_(spIp, hw);
+    JsonDocument doc;
+    doc["ok"] = ok;
+    JsonArray slots = doc["slots"].to<JsonArray>();
+    for (uint8_t s = 1; s <= 6; ++s) {
+        JsonObject o = slots.add<JsonObject>();
+        o["slot"]     = s;
+        o["source"]   = hw[s-1].source;
+        o["location"] = hw[s-1].location;
+        o["name"]     = hw[s-1].name;
+        if (hw[s-1].source == "TUNEIN" && hw[s-1].location.startsWith("/v1/playback/station/")) {
+            o["station_id"] = hw[s-1].location.substring(strlen("/v1/playback/station/"));
+        }
+    }
+    String body; serializeJson(doc, body);
+    req->send(ok ? 200 : 502, "application/json", body);
 }
 
 // -----------------------------------------------------------------------------
@@ -1473,7 +1568,15 @@ void handleOtaUpdateStatus(AsyncWebServerRequest* req) {
 }
 
 void handleRoot(AsyncWebServerRequest* req) {
-    // Wenn LittleFS Web-UI hat -> liefere index.html, sonst Mini-Page.
+    // index.html ist >100 KB; AsyncWebServer schafft das im uncompressed-Pfad
+    // nicht zuverlaessig (Truncation/Timeouts unter Last). Wenn index.html.gz
+    // im LittleFS liegt -> serve mit Content-Encoding: gzip. Browser entpackt.
+    if (LittleFS.exists("/index.html.gz")) {
+        auto* resp = req->beginResponse(LittleFS, "/index.html.gz", "text/html");
+        resp->addHeader("Content-Encoding", "gzip");
+        req->send(resp);
+        return;
+    }
     if (LittleFS.exists("/index.html")) {
         req->send(LittleFS, "/index.html", "text/html");
         return;
@@ -1491,7 +1594,6 @@ void handleRoot(AsyncWebServerRequest* req) {
           "<li><code>GET /api/speakers</code></li>"
           "<li><code>POST /api/speakers/discover</code></li>"
           "<li><code>POST /api/speaker/&lt;id&gt;/migrate</code></li>"
-          "<li><code>POST /api/speaker/&lt;id&gt;/revert</code></li>"
           "<li><code>GET/PUT /api/speaker/&lt;id&gt;/preset/&lt;1..6&gt;</code></li>"
           "<li><code>POST /api/group/sync</code></li>"
           "<li><code>GET /api/tunein/resolve/&lt;s24896&gt;</code></li>"
@@ -1717,7 +1819,6 @@ void registerApiEndpoints(AsyncWebServer& ui) {
     routeJsonBody(ui, "/api/speakers/add", HTTP_POST, handleSpeakerAdd);
     ui.on("^/api/speakers/([^/]+)$",  HTTP_DELETE, handleSpeakerDelete);
     ui.on("^/api/speaker/([^/]+)/migrate$",        HTTP_POST, handleMigrate);
-    ui.on("^/api/speaker/([^/]+)/revert$",         HTTP_POST, handleRevert);
     ui.on("^/api/speaker/([^/]+)/reboot$",         HTTP_POST, handleReboot);
     ui.on("/api/speakers/refresh-status",          HTTP_POST, handleRefreshStatus);
 
@@ -1733,6 +1834,8 @@ void registerApiEndpoints(AsyncWebServer& ui) {
     ui.on("^/api/speaker/([^/]+)/push-all$", HTTP_POST, handleBulkPushPresets);
     ui.on("^/api/speaker/([^/]+)/key/([A-Z_0-9]+)$", HTTP_POST, handleSpeakerKey);
     ui.on("^/api/speaker/([^/]+)/play-preset/([1-6])$", HTTP_POST, handlePlayPreset);
+    routeJsonBody(ui, "^/api/speaker/([^/]+)/play-source$", HTTP_POST, handlePlaySource);
+    ui.on("^/api/speaker/([^/]+)/hardware-presets$", HTTP_GET, handleGetHardwarePresets);
     ui.on("^/api/speaker/([^/]+)/now-playing-live$", HTTP_GET, handleNowPlayingLive);
 
     ui.on("^/api/speaker/([^/]+)/diagnostic-snapshot$",

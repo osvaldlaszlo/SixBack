@@ -140,5 +140,25 @@ def main():
     _atomic_write(HEADER_FILE, header)
     print(f"[version_bump] {new_version} @ {now}")
 
+    # ----- Gzip data/index.html for LittleFS serving ------------------------
+    # The hand-written UI HTML is ~110 KB. AsyncWebServer truncates large
+    # responses under load on ESP32; serving a gzip-compressed copy gets us
+    # ~75% smaller payload (~25 KB) which lands reliably. The backend's
+    # handleRoot serves index.html.gz first if present.
+    import gzip as _gzip
+    data_dir = os.path.join(PROJECT_DIR, "data")
+    src_html = os.path.join(data_dir, "index.html")
+    gz_html  = os.path.join(data_dir, "index.html.gz")
+    if os.path.isfile(src_html):
+        src_mtime = os.path.getmtime(src_html)
+        if (not os.path.isfile(gz_html) or
+            os.path.getmtime(gz_html) < src_mtime):
+            with open(src_html, "rb") as fi:
+                raw = fi.read()
+            with _gzip.open(gz_html, "wb", compresslevel=9) as fo:
+                fo.write(raw)
+            print(f"[gzip-ui] {len(raw)} -> {os.path.getsize(gz_html)} bytes "
+                  f"({100*os.path.getsize(gz_html)/max(1,len(raw)):.1f}%)")
+
 
 main()

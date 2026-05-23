@@ -107,6 +107,44 @@
   .actions .pwr:hover { filter: brightness(.96); }
   .actions .vol { font-weight: 600; padding: .25em .55em; min-width: 3em; }
 
+  /* ---- Dual-row slot layout (HW vs Store) ----------------------------- */
+  .preset .slot-head { display: flex; justify-content: space-between;
+                       align-items: baseline; font-size: .72em; color: var(--mute);
+                       font-weight: 600; margin-bottom: .15em; }
+  .preset .slot-edit-badge { color: var(--warn); font-weight: 700; font-size: .9em; }
+  .preset .slot-synced-badge { color: var(--ok); font-weight: 600; }
+  .preset .slot-row { display: flex; align-items: center; gap: .4em;
+                      padding: .2em 0; min-height: 1.5em; }
+  .preset .slot-row.hw    { border-bottom: 1px dashed var(--line); padding-bottom: .35em; }
+  .preset .slot-row.store { padding-top: .35em; }
+  .preset .slot-row .row-label { font-size: .68em; color: var(--mute);
+                                  font-family: ui-monospace, Menlo, monospace;
+                                  flex-shrink: 0; min-width: 5em; }
+  .preset .slot-row .row-cover { width: 28px; height: 28px; object-fit: contain;
+                                  background: #fff; border: 1px solid var(--line);
+                                  border-radius: 3px; padding: 1px; flex-shrink: 0; }
+  .preset .slot-row .row-cover-ph { width: 28px; height: 28px;
+                                     display: inline-flex; align-items: center;
+                                     justify-content: center; background: #fff;
+                                     border: 1px dashed var(--line); border-radius: 3px;
+                                     font-size: 1em; color: var(--mute); flex-shrink: 0; }
+  .preset .slot-row .row-name { font-weight: 600; font-size: .85em;
+                                 overflow: hidden; text-overflow: ellipsis;
+                                 white-space: nowrap; }
+  .preset .slot-row .row-name.empty { font-style: italic; font-weight: 400; color: var(--mute); }
+  .preset .slot-row.store .row-name { color: var(--warn); }    /* unsaved edit */
+  .preset .slot-push { margin-top: .35em; padding: .25em .55em; font-size: .78em;
+                       background: var(--warn); color: #fff; border: 1px solid var(--warn);
+                       border-radius: 4px; cursor: pointer; width: 100%; }
+  .preset .slot-push:hover { filter: brightness(.92); }
+  .preset .slot-push:disabled { opacity: .5; cursor: wait; }
+  .preset .slot-single { display: flex; align-items: center; gap: .5em; padding: .3em 0; }
+  .preset .slot-single .row-cover, .preset .slot-single .row-cover-ph {
+                       width: 48px; height: 48px; font-size: 1.4em; }
+  .preset .slot-single .row-name { font-size: .92em; }
+  .preset .slot-empty-drop { padding: .8em .4em; text-align: center;
+                              color: var(--mute); font-style: italic; font-size: .85em; }
+
   .modal { position: fixed; inset: 0; background: rgba(0,0,0,.4);
            display: none; align-items: center; justify-content: center; padding: 1em; z-index:99; }
   .modal.open { display: flex; }
@@ -163,7 +201,6 @@
                         color: var(--ink); font-family: ui-monospace, Menlo, monospace;
                         margin-top: .3em; }
   .ota-progress-label.active { display: block; }
-  .repo { margin-top: 1em; font-size: .85em; color: var(--mute); }
   .repo a { color: var(--accent); }
 
   .automode-bar {
@@ -190,19 +227,53 @@
   .switch input:checked + .slider::before { transform: translateX(20px); }
   .switch input:disabled + .slider { opacity: .6; cursor: wait; }
 
-  /* Station library drawer (Phase 2) */
-  .lib-drawer { margin: 1em 0; border: 1px solid var(--line); border-radius: 8px;
-                background: #faf8ef; padding: .9em 1em; display: none; }
-  .lib-drawer.open { display: block; }
-  .lib-controls { display: flex; gap: .5em; flex-wrap: wrap; align-items: center; margin-bottom: .7em; }
-  .lib-controls input[type=text] { flex: 1 1 14em; padding: .4em .6em; font-size: 1em;
-                                    border: 1px solid var(--line); border-radius: 6px; background: #fff; }
-  .lib-controls select { padding: .4em; border: 1px solid var(--line); border-radius: 6px; background: #fff; }
-  .lib-controls .hint { color: var(--mute); font-size: .85em; flex: 1 1 100%; }
-  .lib-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-              gap: .55em; max-height: 32em; overflow-y: auto; padding-right: .3em; }
-  .lib-tile { border: 1px solid var(--line); border-radius: 6px; padding: .45em; background: #fff;
-              cursor: grab; display: flex; flex-direction: column; gap: .3em; transition: transform .08s, box-shadow .12s; }
+  /* ============ Media sidebar (Phase 4) — Radio / Stream / DLNA ============
+     Always-on left-rail panel; user can collapse to a 38-px icon strip.
+     Body gets padding-left so main content shifts; topbar respects that. */
+  body { padding-left: 340px; transition: padding-left .25s ease; }
+  body.sidebar-collapsed { padding-left: 56px; }
+  @media (max-width: 720px) {
+    body { padding-left: 0; }
+    .sidebar:not(.collapsed) { box-shadow: 0 0 0 9999px rgba(0,0,0,.35); }
+  }
+
+  .sidebar { position: fixed; top: 0; left: 0; height: 100vh; width: 320px;
+             background: #f4f1e7; border-right: 1px solid var(--line);
+             display: flex; flex-direction: column; z-index: 100;
+             transition: width .25s ease; box-shadow: 1px 0 3px rgba(0,0,0,.04); }
+  .sidebar.collapsed { width: 38px; }
+  .sidebar.collapsed .sb-tabs, .sidebar.collapsed .sb-body { display: none; }
+  .sb-handle { width: 100%; height: 38px; border: 0; border-bottom: 1px solid var(--line);
+               background: #efeadb; cursor: pointer; font-size: 1em; color: var(--accent);
+               display: flex; align-items: center; justify-content: center; gap: .4em; }
+  .sb-handle:hover { background: #e6dfca; }
+  .sb-tabs { display: flex; border-bottom: 1px solid var(--line); background: #efeadb; }
+  .sb-tab { flex: 1; padding: .55em .3em; border: 0; background: transparent; cursor: pointer;
+            font-size: .85em; font-weight: 600; color: var(--mute);
+            border-right: 1px solid var(--line); transition: background .12s; }
+  .sb-tab:last-child { border-right: 0; }
+  .sb-tab:hover { background: #e6dfca; }
+  .sb-tab.active { background: #faf8ef; color: var(--accent); border-bottom: 2px solid var(--accent);
+                   margin-bottom: -1px; }
+  .sb-body { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
+  .sb-panel { display: none; flex: 1; overflow: hidden; flex-direction: column; padding: .7em; gap: .55em; }
+  .sb-panel.active { display: flex; }
+  .sb-controls { display: flex; gap: .35em; flex-wrap: wrap; align-items: center; }
+  .sb-controls input[type=text], .sb-controls input[type=url] {
+        flex: 1 1 10em; padding: .35em .55em; font-size: .9em;
+        border: 1px solid var(--line); border-radius: 6px; background: #fff; }
+  .sb-controls select { padding: .3em; font-size: .85em; border: 1px solid var(--line);
+                        border-radius: 6px; background: #fff; }
+  .sb-controls button { padding: .35em .7em; font-size: .85em; }
+  .sb-hint { color: var(--mute); font-size: .78em; line-height: 1.3; }
+  .sb-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+             gap: .45em; overflow-y: auto; padding-right: .25em;
+             align-content: start; flex: 1; min-height: 0; }
+  .sb-empty { text-align: center; color: var(--mute); padding: 1.5em .8em; font-style: italic; font-size: .85em; }
+
+  .lib-tile { border: 1px solid var(--line); border-radius: 6px; padding: .4em; background: #fff;
+              cursor: grab; display: flex; flex-direction: column; gap: .25em;
+              transition: transform .08s, box-shadow .12s; }
   .lib-tile:active { cursor: grabbing; }
   .lib-tile:hover { box-shadow: 0 1px 4px rgba(0,0,0,.1); }
   .lib-tile.dragging { opacity: .35; transform: scale(.97); }
@@ -213,14 +284,126 @@
                             align-items: center; justify-content: center; background: #fff;
                             border: 1px dashed #ccc; border-radius: 4px; font-size: 1.3em; color: var(--mute);
                             pointer-events: none; }
-  .lib-tile .tile-name { font-weight: 600; font-size: .85em; line-height: 1.2;
+  .lib-tile .tile-name { font-weight: 600; font-size: .78em; line-height: 1.2;
                          overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .lib-tile .tile-meta { font-size: .72em; color: var(--mute);
+  .lib-tile .tile-meta { font-size: .68em; color: var(--mute);
                          overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .lib-empty { text-align: center; color: var(--mute); padding: 2em; font-style: italic; }
+  /* ============== Progress modal (long-running ops) ====================== */
+  /* Backdrop blocks all clicks under the dialog while a sync/push is running
+     so user can't fire a second op and race the first. */
+  .pmodal-back { position: fixed; inset: 0; background: rgba(0,0,0,.45);
+                 display: none; align-items: center; justify-content: center;
+                 z-index: 200; }
+  .pmodal-back.open { display: flex; }
+  .pmodal { background: #fff; border-radius: 10px; padding: 1.2em 1.4em;
+            min-width: 320px; max-width: 540px; box-shadow: 0 12px 32px rgba(0,0,0,.25);
+            font: inherit; color: var(--ink); }
+  .pmodal h3 { margin: 0 0 .8em; font-size: 1.05em; color: var(--accent); }
+  .pmodal .pmodal-bar { height: 6px; background: #eee; border-radius: 3px;
+                        overflow: hidden; margin: .6em 0 1em; }
+  .pmodal .pmodal-bar > div { height: 100%; background: var(--ok);
+                              transition: width .3s ease; width: 0%; }
+  .pmodal .pmodal-steps { display: flex; flex-direction: column; gap: .4em;
+                          margin: .5em 0 .9em; }
+  .pmodal .pstep { display: flex; align-items: baseline; gap: .55em;
+                   font-size: .9em; padding: .2em 0; }
+  .pmodal .pstep .pstep-icon { font-family: ui-monospace, Menlo, monospace;
+                               width: 1.2em; text-align: center; flex-shrink: 0; }
+  .pmodal .pstep .pstep-label { flex: 1; }
+  .pmodal .pstep .pstep-extra { color: var(--mute); font-size: .85em; }
+  .pmodal .pstep.pending  .pstep-icon { color: #ccc; }
+  .pmodal .pstep.running  .pstep-icon { color: var(--accent); animation: pspin 1s linear infinite; }
+  .pmodal .pstep.done     .pstep-icon { color: var(--ok); }
+  .pmodal .pstep.error    .pstep-icon { color: var(--bad); }
+  .pmodal .pstep.skip     .pstep-icon { color: #999; }
+  .pmodal .pstep.error    .pstep-label { color: var(--bad); }
+  .pmodal .pstep.skip     .pstep-label { color: var(--mute); }
+  @keyframes pspin { from {transform: rotate(0deg);} to {transform: rotate(360deg);} }
+  .pmodal .pmodal-foot { display: flex; justify-content: flex-end; gap: .5em;
+                         margin-top: .4em; }
+  .pmodal .pmodal-foot button { padding: .35em .9em; }
+  .pmodal .pmodal-foot button:disabled { opacity: .5; cursor: wait; }
+
+  .sb-stream-meta { font-size: .78em; color: var(--mute); padding: .25em 0; min-height: 1.2em; }
+  .sb-stream-meta.ok { color: var(--ok); }
+  .sb-stream-meta.bad { color: var(--bad); }
+  .sb-target-bar { display: flex; align-items: center; gap: .4em; padding: .35em .7em;
+                   background: #f4f1e7; border-bottom: 1px solid var(--line); }
+  .sb-target-bar select { flex: 1; font-size: .8em; padding: .25em .35em;
+                          border: 1px solid var(--line); border-radius: 4px; background: #fff; }
+  .sb-preview-line { font-size: .75em; color: var(--mute); padding: 0 .7em;
+                     min-height: 1em; background: #f4f1e7;
+                     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sb-preview-line.active { color: var(--ok); padding-top: .15em; padding-bottom: .25em;
+                            border-bottom: 1px solid var(--line); }
+  .lib-tile { position: relative; }
+  .lib-tile.previewing { box-shadow: 0 0 0 2px var(--ok); }
 </style>
 </head>
 <body>
+
+<aside class="sidebar" id="sidebar">
+  <button class="sb-handle" id="sb-handle" onclick="toggleSidebar()" title="Show/hide media browser">
+    <span id="sb-handle-icon">◧</span><span id="sb-handle-text">Media</span>
+  </button>
+  <div class="sb-tabs">
+    <button class="sb-tab active" data-tab="radio"  onclick="sidebarSelectTab('radio')">📻 Radio</button>
+    <button class="sb-tab"        data-tab="stream" onclick="sidebarSelectTab('stream')">🔗 Stream</button>
+    <button class="sb-tab"        data-tab="dlna"   onclick="sidebarSelectTab('dlna')">💿 DLNA</button>
+  </div>
+  <!-- Preview-target bar: applies to all tabs. A single click on any tile
+       previews that source on the chosen target without writing a preset. -->
+  <div class="sb-target-bar">
+    <span style="font-size:.78em;color:var(--mute)">Preview on:</span>
+    <select id="sb-target" onchange="onSidebarTargetChange()">
+      <option value="browser">💻 This browser</option>
+    </select>
+    <button id="sb-stop-btn" onclick="stopPreview()" style="display:none;padding:.2em .5em;font-size:.75em" title="Stop preview">⏹</button>
+  </div>
+  <div class="sb-preview-line" id="sb-preview-line"></div>
+  <div class="sb-body">
+    <!-- Radio tab — TuneIn-only. Saves reliably as Bose-native TUNEIN -->
+    <!-- presets (location=/v1/playback/station/<sid>). -->
+    <section class="sb-panel active" id="sb-panel-radio">
+      <div class="sb-controls">
+        <input type="text" id="lib-q" placeholder="Search TuneIn (SWR3, BBC, jazz…)" oninput="onLibrarySearchInput()">
+        <button onclick="loadLibrary()" title="Refresh">↻</button>
+      </div>
+      <div class="sb-hint">Drag onto a preset slot to save. Click to preview on a speaker.</div>
+      <div class="sb-grid" id="lib-grid">
+        <div class="sb-empty">Type ≥2 characters to search.</div>
+      </div>
+    </section>
+
+    <!-- Stream tab — paste URL+Name, server-side validate, then drag -->
+    <section class="sb-panel" id="sb-panel-stream">
+      <div class="sb-controls" style="flex-direction:column; align-items:stretch;">
+        <input type="text" id="stream-name" placeholder="Display name (e.g. Custom Jazz)">
+        <input type="url"  id="stream-url"  placeholder="https://…/stream.mp3">
+        <input type="url"  id="stream-img"  placeholder="Logo URL (optional)">
+        <button class="primary" onclick="streamAddTile()" id="stream-add-btn">+ Add &amp; validate</button>
+      </div>
+      <div class="sb-stream-meta" id="stream-meta"></div>
+      <div class="sb-hint">Validated streams appear below — drag onto a slot.<br>
+        Validator probes the URL (HEAD/ICY) on the proxy; bad URLs are flagged.</div>
+      <div class="sb-grid" id="stream-grid">
+        <div class="sb-empty">No custom streams yet. Add one above.</div>
+      </div>
+    </section>
+
+    <!-- DLNA tab — placeholder for Phase-4 UPnP browse (Pi5 proxy + ESP-side) -->
+    <section class="sb-panel" id="sb-panel-dlna">
+      <div class="sb-empty">
+        <p>💿 <b>DLNA browse</b> — coming next.</p>
+        <p style="text-align:left;font-style:normal;color:var(--ink);font-size:.85em;line-height:1.4">
+          Today the speaker still sees its DLNA media servers via
+          <code>/listMediaServers</code> and you can long-press a slot at the box
+          itself. The proper in-app browse (server list + UPnP-CDS folders +
+          drag-track) lands in the next iteration.</p>
+      </div>
+    </section>
+  </div>
+</aside>
 
 <div class="topbar">
   <img src="/assets/sixback-mark.png" alt="" style="height:1.7em; vertical-align:-.35em; margin-right:.35em">
@@ -244,30 +427,8 @@
   <button onclick="refreshStatuses()">🔄 Refresh status</button>
   <button onclick="openAddModal()">+ Add speaker manually</button>
   <button onclick="openGroupSyncModal()">⇄ Sync presets to group</button>
-  <button id="lib-toggle" onclick="toggleLibrary()">📻 Browse stations</button>
   <button class="danger" onclick="rebootEsp()">⟲ Reboot ESP</button>
   <button class="danger" onclick="factoryResetWifi()">⚠ WiFi factory reset</button>
-</div>
-
-<div class="lib-drawer" id="lib-drawer">
-  <div class="lib-controls">
-    <input type="text" id="lib-q" placeholder="Search stations (e.g. SWR3, BBC, jazz)" oninput="onLibrarySearchInput()">
-    <select id="lib-country" onchange="loadLibrary()">
-      <option value="DE">🇩🇪 Germany</option>
-      <option value="AT">🇦🇹 Austria</option>
-      <option value="CH">🇨🇭 Switzerland</option>
-      <option value="GB">🇬🇧 United Kingdom</option>
-      <option value="US">🇺🇸 USA</option>
-      <option value="FR">🇫🇷 France</option>
-      <option value="NL">🇳🇱 Netherlands</option>
-      <option value="">🌐 Any</option>
-    </select>
-    <button onclick="loadLibrary()">↻ Refresh</button>
-    <div class="hint">Drag a station onto a preset slot below. Logos provided by SixBack station proxy.</div>
-  </div>
-  <div class="lib-grid" id="lib-grid">
-    <div class="lib-empty">Loading…</div>
-  </div>
 </div>
 
 <div id="speakers-host"></div>
@@ -321,24 +482,16 @@
   <div class="ota-progress-label" id="ota-fs-prog-label"></div>
 
   <p class="hint">
-    Manual upload writes via <code>POST /api/ota</code> (app) or
-    <code>POST /api/ota/fs</code> (LittleFS). After a successful flash the
-    ESP reboots automatically; the page reloads ~9 s later. Get the latest
-    <code>-firmware.bin</code> + <code>-littlefs.bin</code> matching your
-    chip from the
-    <a href="https://github.com/tostmann/BoseFix32/releases" target="_blank" rel="noopener">GitHub releases page</a>.
+    For most cases use <b>Online update</b> above — the ESP pulls the right
+    image for its chip itself. Use Manual upload only for custom local builds
+    or to roll back to an older release. App image goes first, LittleFS image
+    second; the ESP reboots after each flash and the page reloads ~9 s later.
   </p>
 </div>
 
 <div class="syspanel">
   <h2>System</h2>
   <div class="sys-grid" id="sys-grid">…</div>
-  <div class="repo">
-    Repository:
-    <a href="https://github.com/tostmann/BoseFix32" target="_blank" rel="noopener">github.com/tostmann/BoseFix32</a>
-    · clone:
-    <code>git clone git@github.com:tostmann/BoseFix32.git</code>
-  </div>
   <details>
     <summary>Show raw API</summary>
     <pre id="raw-status">…</pre>
@@ -441,7 +594,12 @@
 
 <script>
 let STATE = { speakers: [], editing: null, dragSource: null, _lastDragEndedAt: 0,
-               libOpen: false, libResults: [], libSearchTimer: null,
+               libResults: [], libSearchTimer: null,
+               // Per-device preset state: store (what user wants) + hw (what
+               // speaker actually has). Both are arrays of 6 normalized slots.
+               // Populated by loadPresetsFor() — one fetch per source.
+               presetsByDev: {},
+               sidebarTab: 'radio', streamTiles: [],
                // Devices whose ESP-store has been edited but not yet pushed to hardware.
                // Set on swap/library-drop, cleared on successful push-all.
                // Page reload resets (assumed clean) — this is intentional, see UX docs.
@@ -541,7 +699,7 @@ async function loadStatus() {
               s.wifi.improv_active ? 'ok' : ''),
       sysCell('Captive AP',
               s.wifi.captive_active
-                ? `armed · ${s.wifi.captive_window_s|0}s left — join open BoseFix32-…`
+                ? `armed · ${s.wifi.captive_window_s|0}s left — join open SixBack-…`
                 : 'closed',
               s.wifi.captive_active ? 'ok' : ''),
     ].join('');
@@ -840,6 +998,7 @@ async function loadSpeakers() {
     const r = await api('/api/speakers');
     STATE.speakers = r.speakers || [];
     renderSpeakers();
+    refreshSidebarTargets();
   } catch (e) { toast('Speaker list: '+e.message, 'error'); }
 }
 
@@ -977,13 +1136,10 @@ function actionButtonsHtml(s) {
   const migrate = s.owned_by_us
     ? ''
     : `<button class="primary" onclick="actSpeaker('${s.device_id}','migrate')">→ Migrate</button>`;
-  const revert = (s.owned_by_us || s.status === 'migrated')
-    ? `<button class="danger" onclick="actSpeaker('${s.device_id}','revert')">↩ Revert to original Bose</button>`
-    : '';
   const power = `<button class="pwr" id="pwr-${s.device_id}" title="Toggle speaker power" onclick="togglePower('${s.device_id}')">Power</button>`;
   const vol = `<button class="vol" title="Volume down (1 step)" onclick="sendKey('${s.device_id}','VOLUME_DOWN')">Vol −</button>`
             + `<button class="vol" title="Volume up (1 step)"   onclick="sendKey('${s.device_id}','VOLUME_UP')">Vol +</button>`;
-  return power + vol + migrate + revert +
+  return power + vol + migrate +
     `<button onclick="actSpeaker('${s.device_id}','reboot')">⟲ Reboot</button>` +
     `<button onclick="actSpeaker('${s.device_id}','refresh')">🔄 Status</button>` +
     `<button title="Download diagnostic snapshot — BMX endpoints + Telnet config — to send us for unsupported-source debugging" onclick="downloadSnapshot('${s.device_id}')">📋 Snapshot</button>` +
@@ -1017,107 +1173,191 @@ function speakerCard(s, myBase) {
     </div>`;
 }
 
+// Fetch both ESP-store and hardware-presets in parallel, store both in
+// STATE.presetsByDev[devId] for the dual-row renderer. Auto-import from
+// device only if the ESP store has never been populated (legacy behavior).
 async function loadPresetsFor(devId) {
   try {
-    let r = await api('/api/speaker/'+encodeURIComponent(devId)+'/presets');
-    let presets = r.presets || [];
-    // Auto-import nur wenn der Store komplett leer ist (Erstkontakt, Migrate-
-    // from-Bose-Cloud). Frueheres "anyEmpty" war zu aggressiv: hat User-Edits
-    // (Drag&Drop-Swap, library-set, gezieltes /clear) zuverlaessig
-    // ueberschrieben weil import-from-device::setSlots den GESAMTEN
-    // Slot-Vector ersetzt — siehe Emma swap 1↔2 2026-05-23, Store
-    // re-flipped zu OLD wenn Push noch nicht angekommen war.
-    //
-    // Konsequenz: Slot 6 OPAQUE bleibt unsichtbar bis User einmal manuell
-    // "Import from speaker" triggert (TODO als sep. Button). Tradeoff
-    // bewusst gewaehlt: Stille Daten-Korruption ist schlimmer als ein
-    // Missing-Slot 6 nach Erstmigration.
-    const noPresets = presets.length === 0;
-    const allEmpty = presets.length > 0 && presets.every(p => !p.source || p.source === 'EMPTY');
-    if (noPresets || allEmpty) {
+    const [storeR, hwR] = await Promise.all([
+      api('/api/speaker/'+encodeURIComponent(devId)+'/presets').catch(e => ({error: e.message})),
+      api('/api/speaker/'+encodeURIComponent(devId)+'/hardware-presets').catch(e => ({error: e.message})),
+    ]);
+    let storeSlots = normalizeStoreSlots_(storeR.presets || []);
+    const hwSlots  = normalizeHwSlots_(hwR.slots || [], hwR.ok);
+    // First-contact import: if store empty, pull from hardware.
+    const storeAllEmpty = storeSlots.every(s => isSlotEmpty_(s));
+    if (storeAllEmpty && !hwSlots.every(s => isSlotEmpty_(s))) {
       try {
         const ir = await api('/api/speaker/'+encodeURIComponent(devId)+'/presets/import-from-device',
                               {method:'POST'});
         if (ir.count > 0) {
-          r = await api('/api/speaker/'+encodeURIComponent(devId)+'/presets');
-          presets = r.presets || [];
+          const r2 = await api('/api/speaker/'+encodeURIComponent(devId)+'/presets');
+          storeSlots = normalizeStoreSlots_(r2.presets || []);
         }
-      } catch(_) { /* speaker maybe unreachable - silently show empty */ }
+      } catch(_) {}
     }
-    const host = document.getElementById('presets-'+devId);
-    if (!host) return;
-    const sorted = presets.slice().sort((a,b) => (a.slot||0) - (b.slot||0));
-    host.innerHTML = sorted.map((p, i) => presetCard(devId, p, i)).join('');
+    STATE.presetsByDev[devId] = { store: storeSlots, hw: hwSlots,
+                                   hwReachable: hwR.ok !== false, loadedAt: Date.now() };
+    renderSpeakerSlots(devId);
     // Index slots for fast now-playing match lookups
     STATE.slotIndex = STATE.slotIndex || {};
-    sorted.forEach((p, i) => { STATE.slotIndex[`${devId}#${i+1}`] = p; });
-    // Re-apply playing highlight + push-button visibility after re-render
+    storeSlots.forEach((p, i) => { STATE.slotIndex[`${devId}#${i+1}`] = p; });
     applyPlayingHighlight(devId);
     updatePushVisibility(devId);
   } catch(e) { /* ignore */ }
 }
 
-function presetCard(devId, p, idx) {
-  const slot = idx + 1;
-  const empty = (p.source === 'EMPTY' || !p.source);
-  const opaque = (p.source === 'OPAQUE');
-  const cls = 'preset' + (empty ? ' empty' : '') + (opaque ? ' opaque' : '');
-  // Draggable: nur belegte, nicht-OPAQUE Slots. OPAQUE und EMPTY sind valide
-  // Drop-Targets (EMPTY = MOVE, OPAQUE = blockiert mit Toast).
-  const draggable = (!empty && !opaque) ? 'true' : 'false';
-  let meta = '';
-  let pname = 'empty';
-  let cover = '';
-  if (opaque) {
-    pname = p.name || ('['+(p.opaqueSourceName||'opaque')+'] preset');
-    meta = 'Passthrough: '+(p.opaqueSourceName || 'unknown source')+' ('+(p.rawContentItemBytes||0)+' B)';
-    // DLNA-Slots haben oft <containerArt>http://lan-dlna-server/...</containerArt>
-    // im rawContentItem. Wenn das vorhanden ist, versuche es als Bild zu laden
-    // (Browser muss im selben LAN sein); onerror fällt auf 🔒 zurück.
-    if (p.containerArt) {
-      cover = `<img class="pcover" src="${esc(p.containerArt)}" alt="" loading="lazy"
-                    onerror="this.outerHTML='<div class=&quot;pcover-placeholder&quot; title=&quot;speaker-managed&quot;>🔒</div>'">`;
-    } else {
-      cover = `<div class="pcover-placeholder" title="speaker-managed">🔒</div>`;
-    }
-  } else if (!empty) {
-    pname = p.name;
-    meta = p.source === 'TUNEIN' ? 'TuneIn '+p.stationId : 'URL: '+p.streamUrl;
-    // Auto-derive logo URL when imageUrl is empty:
-    //   TUNEIN with valid stationId -> proxy resolves via OPML Describe +
-    //     downloads the timestamped .jpg, returns a 96x96 PNG.
-    //   LOCAL_INTERNET_RADIO with a name -> proxy searches RadioBrowser by
-    //     name (forum-user case: "Bayern 3", "HR4", …), returns best-hit
-    //     favicon resized to 96x96.
-    //   else -> placeholder
-    let img = p.imageUrl || '';
-    if (!img && p.source === 'TUNEIN' && /^[sgptcr]\d+$/i.test(p.stationId || '')) {
-      img = `${STATIONS_API_BASE}/tunein-logo/${p.stationId}`;
-    } else if (!img && p.source === 'LOCAL_INTERNET_RADIO' && p.name && p.name.length >= 2) {
-      img = `${STATIONS_API_BASE}/by-name?q=${encodeURIComponent(p.name)}&country=DE`;
-    }
-    cover = img
-      ? `<img class="pcover" src="${esc(img)}" alt="" loading="lazy" onerror="this.outerHTML='<div class=&quot;pcover-placeholder&quot;>📻</div>'">`
-      : `<div class="pcover-placeholder">📻</div>`;
-  } else {
-    cover = `<div class="pcover-placeholder" title="drop a station here">＋</div>`;
+// Normalize backend `/presets` JSON to a length-6 array indexed 0..5.
+function normalizeStoreSlots_(rawList) {
+  const out = [];
+  for (let i = 1; i <= 6; i++) out.push({slot:i, source:'EMPTY', name:'', stationId:'', streamUrl:'', imageUrl:''});
+  for (const p of rawList) {
+    const s = (p.slot|0); if (s < 1 || s > 6) continue;
+    out[s-1] = Object.assign(out[s-1], p, {slot:s});
   }
-  // dnd handlers in code (delegation would lose target-specific data on nested img).
+  return out;
+}
+
+// Normalize backend `/hardware-presets` slots to a length-6 array.
+function normalizeHwSlots_(rawList, ok) {
+  const out = [];
+  for (let i = 1; i <= 6; i++) out.push({slot:i, source:'', name:'', location:'', station_id:'',
+                                          reachable: ok !== false});
+  for (const h of rawList) {
+    const s = (h.slot|0); if (s < 1 || s > 6) continue;
+    out[s-1] = Object.assign(out[s-1], h, {slot:s});
+  }
+  return out;
+}
+
+function isSlotEmpty_(s) {
+  if (!s) return true;
+  if (s.source === 'EMPTY' || s.source === '' || s.source === undefined || s.source === null) return true;
+  return false;
+}
+
+// Compare store-slot and hw-slot for equivalence (= "synced").
+function slotsMatch_(store, hw) {
+  if (isSlotEmpty_(store) && isSlotEmpty_(hw)) return true;
+  if (isSlotEmpty_(store) || isSlotEmpty_(hw)) return false;
+  if (store.source === 'TUNEIN' && hw.source === 'TUNEIN') {
+    return store.stationId === hw.station_id && store.name === hw.name;
+  }
+  if (store.source === 'LOCAL_INTERNET_RADIO' && hw.source === 'LOCAL_INTERNET_RADIO') {
+    return store.streamUrl === hw.location && store.name === hw.name;
+  }
+  if (store.source === 'OPAQUE') {
+    // OPAQUE stores raw ContentItem of any type — match by source-name + name.
+    return hw.source === (store.opaqueSourceName || '') ? true :
+           (hw.name === store.name);   // soft match
+  }
+  return false;
+}
+
+function renderSpeakerSlots(devId) {
+  const host = document.getElementById('presets-'+devId);
+  if (!host) return;
+  const cards = [];
+  for (let i = 1; i <= 6; i++) cards.push(presetCard(devId, i));
+  host.innerHTML = cards.join('');
+}
+
+// Render one slot card showing BOTH the speaker's hardware state and the
+// ESP store state. Three layouts:
+//   - synced  : one row, ✓ pill, no push button
+//   - diff    : two rows ("on speaker:" + "you set:"), push-slot-N button
+//   - empty   : drop-target placeholder
+// Click semantics: click whole card = play the speaker's preset N (HW state).
+// Drag = swap source. Drop = edit store.
+function presetCard(devId, slotNum) {
+  const d = STATE.presetsByDev[devId] || { store: [], hw: [], hwReachable: true };
+  const store = d.store[slotNum-1] || {source:'EMPTY'};
+  const hw    = d.hw[slotNum-1]    || {source:''};
+  const storeEmpty = isSlotEmpty_(store);
+  const hwEmpty    = isSlotEmpty_(hw);
+  const synced     = slotsMatch_(store, hw);
+  const opaque     = (store.source === 'OPAQUE');
+
+  // Drag: only when store has a non-empty, non-OPAQUE entry to drag away.
+  const draggable = (!storeEmpty && !opaque) ? 'true' : 'false';
+  const dataSource = esc(store.source || (hw.source || 'EMPTY'));
   const dndAttrs = `draggable="${draggable}"
-       data-dev="${esc(devId)}" data-slot="${slot}"
-       data-source="${esc(p.source||'EMPTY')}"
+       data-dev="${esc(devId)}" data-slot="${slotNum}"
+       data-source="${dataSource}"
        ondragstart="onPresetDragStart(event)"
        ondragend="onPresetDragEnd(event)"
        ondragover="onPresetDragOver(event)"
        ondragleave="onPresetDragLeave(event)"
        ondrop="onPresetDrop(event)"`;
+
+  let cls = 'preset';
+  if (opaque) cls += ' opaque';
+  if (storeEmpty && hwEmpty) cls += ' empty';
+
+  // Header line: slot number + edit/sync badge
+  let badge = '';
+  if (storeEmpty && hwEmpty)  badge = '';
+  else if (synced)            badge = '<span class="slot-synced-badge">✓ synced</span>';
+  else                        badge = '<span class="slot-edit-badge">✏ unsaved</span>';
+  const head = `<div class="slot-head"><span>Preset ${slotNum}</span>${badge}</div>`;
+
+  let body;
+  if (storeEmpty && hwEmpty) {
+    body = `<div class="slot-empty-drop">＋ drop a TuneIn tile here</div>`;
+  } else if (synced) {
+    body = `<div class="slot-single">${slotIcon_(store, true)}<span class="row-name">${esc(slotName_(store))}</span></div>`;
+  } else {
+    // Two rows. HW may be empty.
+    body =
+      `<div class="slot-row hw">` +
+        `<span class="row-label">on speaker</span>` +
+        slotIcon_(hw, false) +
+        `<span class="row-name${hwEmpty ? ' empty' : ''}">${esc(hwEmpty ? '(empty)' : slotName_(hw))}</span>` +
+      `</div>` +
+      `<div class="slot-row store">` +
+        `<span class="row-label">you set</span>` +
+        slotIcon_(store, false) +
+        `<span class="row-name${storeEmpty ? ' empty' : ''}">${esc(storeEmpty ? '(cleared)' : slotName_(store))}</span>` +
+      `</div>` +
+      `<button class="slot-push" onclick="event.stopPropagation(); pushSingleSlot('${esc(devId)}', ${slotNum})">push slot ${slotNum} →</button>`;
+  }
+
   return `
-    <div class="${cls}" ${dndAttrs} onclick="onPresetClick(event, '${devId}', ${slot}, ${JSON.stringify(p).replace(/"/g,'&quot;')})">
-      <div class="slot">Preset ${slot}</div>
-      ${cover}
-      <div class="pname">${esc(pname)}</div>
-      <div class="pmeta">${esc(meta)}</div>
+    <div class="${cls}" ${dndAttrs}
+         onclick="onPresetClick(event, '${esc(devId)}', ${slotNum})">
+      ${head}
+      ${body}
     </div>`;
+}
+
+function slotName_(s) {
+  if (!s || isSlotEmpty_(s)) return '';
+  if (s.source === 'OPAQUE') return s.name || ('['+(s.opaqueSourceName||'opaque')+']');
+  return s.name || '';
+}
+
+// Render a small cover image for one slot side. `big` switches to the
+// 48-px version used in the synced single-row layout.
+function slotIcon_(s, big) {
+  const cls = 'row-cover';
+  const phCls = 'row-cover-ph';
+  if (!s || isSlotEmpty_(s)) return `<div class="${phCls}">·</div>`;
+  if (s.source === 'OPAQUE') {
+    if (s.containerArt) {
+      return `<img class="${cls}" src="${esc(s.containerArt)}" alt="" loading="lazy"` +
+             ` onerror="this.outerHTML='<div class=&quot;${phCls}&quot;>🔒</div>'">`;
+    }
+    return `<div class="${phCls}" title="speaker-managed">🔒</div>`;
+  }
+  // TUNEIN: cover via station_id (hw side uses station_id; store side uses stationId).
+  let img = s.imageUrl || '';
+  const sid = s.stationId || s.station_id || '';
+  if (!img && (s.source === 'TUNEIN' || (s.source === '' && sid)) && /^[sgptcr]\d+$/i.test(sid)) {
+    img = `${STATIONS_API_BASE}/tunein-logo/${sid}`;
+  }
+  if (img) return `<img class="${cls}" src="${esc(img)}" alt="" loading="lazy"` +
+                  ` onerror="this.outerHTML='<div class=&quot;${phCls}&quot;>📡</div>'">`;
+  return `<div class="${phCls}">📡</div>`;
 }
 
 // ---- Drag & Drop für Preset-Slots ----
@@ -1125,20 +1365,88 @@ function presetCard(devId, p, idx) {
 // Click-Handler suppress'd den Edit-Modal wenn ein Drag gerade beendet wurde.
 STATE._lastDragEndedAt = 0;
 
-async function onPresetClick(ev, devId, slot, p) {
+async function onPresetClick(ev, devId, slot) {
   // HTML5 dispatcht click NACH dragend wenn der Drag im selben Element startete
   // und endete. Suppress click für 200ms nach dragend.
   if (Date.now() - STATE._lastDragEndedAt < 200) return;
-  // Click = play (wie eine Hardware-Taste am Speaker). Editing passiert
-  // ausschliesslich via Drag&Drop von der Library oder zwischen Slots.
-  if (!p || p.source === 'EMPTY' || !p.source) { toast('Slot is empty — drop a station from the library to set it'); return; }
+  // Click = press the speaker's hardware button N — the speaker plays whatever
+  // is in its HW slot N (NOT what's in the ESP store, because the physical
+  // button on the speaker also plays the HW state). If HW is empty, the
+  // speaker simply does nothing.
+  const d = STATE.presetsByDev[devId];
+  const hw = d && d.hw && d.hw[slot-1];
+  if (!hw || isSlotEmpty_(hw)) {
+    toast(`Speaker slot ${slot} is empty — push a station to it first`);
+    return;
+  }
   try {
     await api(`/api/speaker/${encodeURIComponent(devId)}/play-preset/${slot}`, {method:'POST'});
-    toast(`▶ Playing slot ${slot}`);
+    toast(`▶ ${slotName_(hw)} on slot ${slot}`);
     kickPoll(devId);
   } catch(e) {
     toast('Play failed: '+e.message);
   }
+}
+
+// Push exactly one slot to the speaker via the existing per-slot endpoint
+// (which uses doPush_'s /select + 8s settle + long-press preset save). Wrapped
+// in a progress modal so the user knows it'll take ~13s and can't fire it
+// twice in parallel.
+async function pushSingleSlot(devId, slot) {
+  const d = STATE.presetsByDev[devId];
+  if (!d) return;
+  const store = d.store[slot-1];
+  if (isSlotEmpty_(store)) { toast('Nothing to push — store slot is empty'); return; }
+  if (store.source === 'OPAQUE') { toast('OPAQUE/DLNA slots are speaker-managed and pushed by the device itself.'); return; }
+  const spName = (STATE.speakers.find(s => s.device_id === devId)?.name || devId);
+  progressShow(`Pushing slot ${slot} to ${spName}`, [
+    {id:'select',  label:`/select "${slotName_(store)}"`},
+    {id:'settle',  label:'settle 8 s (speaker stream-stabilize)'},
+    {id:'press',   label:`long-press PRESET_${slot} (≈2.5 s)`},
+    {id:'verify',  label:'verify hardware /presets reflects the change'},
+  ]);
+  progressStep('select', 'running');
+  let pushed = null;
+  try {
+    pushed = await api(`/api/speaker/${encodeURIComponent(devId)}/preset/${slot}/push-to-device`, {method:'POST'});
+  } catch(e) {
+    progressStep('select', 'error', e.message);
+    progressDone();
+    return;
+  }
+  // The push endpoint enqueues and returns immediately; the backend worker
+  // takes ~13s end-to-end. We don't have per-step events from the worker,
+  // so we time-slice the progress visually:
+  progressStep('select', 'done');
+  progressStep('settle', 'running');
+  progressBar(20);
+  await new Promise(r => setTimeout(r, 8000));
+  progressStep('settle', 'done');
+  progressStep('press',  'running');
+  progressBar(60);
+  await new Promise(r => setTimeout(r, 3000));
+  progressStep('press',  'done');
+  progressStep('verify', 'running');
+  progressBar(80);
+  // Re-fetch hardware-presets and update STATE.
+  try {
+    const hwR = await api(`/api/speaker/${encodeURIComponent(devId)}/hardware-presets`);
+    d.hw = normalizeHwSlots_(hwR.slots || [], hwR.ok);
+    const newSynced = slotsMatch_(d.store[slot-1], d.hw[slot-1]);
+    if (newSynced) {
+      progressStep('verify', 'done', '✓ slot matches');
+      STATE.dirtySpeakers.delete(devId);
+    } else {
+      progressStep('verify', 'error',
+                   'hardware did not save (Bose-side LOCAL_INTERNET_RADIO bug — TUNEIN only)');
+    }
+    renderSpeakerSlots(devId);
+    updatePushVisibility(devId);
+  } catch(e) {
+    progressStep('verify', 'error', e.message);
+  }
+  progressBar(100);
+  progressDone(1500);   // auto-close after 1.5s grace
 }
 
 function onPresetDragStart(ev) {
@@ -1288,29 +1596,30 @@ async function onPresetDrop(ev) {
     }
     return;
   }
-  const dst = { dev: el.dataset.dev, slot: parseInt(el.dataset.slot, 10) };
-  if (el.dataset.source === 'OPAQUE') {
-    toast('Speaker-managed slot — re-record at speaker via long-press');
-    return;
-  }
 
   if (src.kind === 'library') {
-    // Library station -> set slot as LOCAL_INTERNET_RADIO
-    toast(`Setting "${src.name}" on slot ${dst.slot}…`);
+    // Only TUNEIN drops produce reliable speaker-saves. Stream-tab tiles are
+    // non-draggable anyway, but defensive-check libSource here in case a
+    // payload sneaks in via cross-window drop.
+    if (src.libSource !== 'TUNEIN') {
+      toast(`Drop blocked — Bose speakers don't save custom stream URLs as presets reliably. Use TuneIn (Radio tab).`, 'error');
+      return;
+    }
+    const putBody = {
+      source: 'TUNEIN',
+      name: src.name,
+      stationId: src.stationId,
+      imageUrl: src.imageUrl || '',
+    };
     try {
       const r = await api(`/api/speaker/${encodeURIComponent(dst.dev)}/preset/${dst.slot}`, {
         method: 'PUT',
         headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({
-          source: 'LOCAL_INTERNET_RADIO',
-          name: src.name,
-          streamUrl: src.streamUrl,
-          imageUrl: src.imageUrl || '',
-        }),
+        body: JSON.stringify(putBody),
       });
       if (r && r.ok) {
         markDirty(dst.dev);
-        toast(`"${src.name}" set on slot ${dst.slot} — click "Push 1–6 to speaker" to write to hardware`);
+        toast(`"${src.name}" → slot ${dst.slot}. Click the slot's push button to save to speaker.`);
         loadPresetsFor(dst.dev);
         kickPoll(dst.dev);
       } else {
@@ -1334,7 +1643,7 @@ async function onPresetDrop(ev) {
     if (r && r.ok) {
       markDirty(src.dev);
       if (dst.dev !== src.dev) markDirty(dst.dev);
-      toast(`Swap done (store only) — click "Push 1–6 to speaker" on affected speakers to write to hardware`);
+      toast(`Swap done in store — click per-slot push (or Push-All) on affected speakers to save to hardware`);
       loadPresetsFor(src.dev);
       kickPoll(src.dev);
       if (dst.dev !== src.dev) {
@@ -1482,59 +1791,205 @@ function updatePushVisibility(devId) {
   el.style.display = STATE.dirtySpeakers.has(devId) ? 'flex' : 'none';
 }
 
-// ---- Bulk Push to speaker ----
+// ---- Bulk Push to speaker (modal-progress, per-slot tracking) ----
+// Pre-computes which slots differ between store and hw, builds one step per
+// to-push slot in the modal, fires push-all (eta_seconds known), time-slices
+// the per-step visual progress to match the backend's serial push queue.
 async function pushAllPresets(devId) {
-  const btn = document.getElementById('push-'+devId);
-  if (!btn) return;
-  if (!confirm('Write all 6 slots from SixBack store to the speaker hardware?\n\n' +
-               'Each slot takes ~13s (select + 8s settle + long-press). ' +
-               '6 slots ≈ 75s total. The speaker should be powered on (not in standby) ' +
-               'for best reliability.')) return;
-  const orig = btn.textContent;
-  btn.disabled = true;
-  btn.textContent = '⏳ pushing…';
-  try {
-    const r = await api(`/api/speaker/${encodeURIComponent(devId)}/push-all`, {method:'POST'});
-    if (r && r.ok) {
-      const eta = r.eta_seconds || 0;
-      const synced = r.synced || 0;
-      const enq = r.enqueued || 0;
-      if (enq === 0) {
-        toast(synced > 0 ? `✓ All slots already in sync (${synced} verified)`
-                         : 'Nothing to push — slots all empty/opaque');
-        btn.disabled = false;
-        btn.textContent = orig;
-        clearDirty(devId);
-      } else {
-        const skipNote = synced > 0 ? `, ${synced} already-synced` : '';
-        toast(`Pushing ${enq} of 6 slots → ~${eta}s${skipNote}`);
-        const lockMs = Math.max((eta + 10) * 1000, 30000);
-        setTimeout(() => {
-          btn.disabled = false;
-          btn.textContent = orig;
-          clearDirty(devId);
-        }, lockMs);
-      }
-    } else {
-      toast('Push failed: '+(r && r.error || 'unknown'));
-      btn.disabled = false;
-      btn.textContent = orig;
-    }
-  } catch (e) {
-    toast('Push failed: '+e.message);
-    btn.disabled = false;
-    btn.textContent = orig;
+  const d = STATE.presetsByDev[devId];
+  if (!d) { toast('No preset state yet — wait for refresh'); return; }
+  const spName = (STATE.speakers.find(s => s.device_id === devId)?.name || devId);
+  // Pre-compute steps: one row per slot, marking up-front which ones will
+  // actually be pushed (mismatch) and which are skipped (synced/empty/opaque).
+  const plan = [];
+  for (let s = 1; s <= 6; ++s) {
+    const store = d.store[s-1], hw = d.hw[s-1];
+    let kind, note;
+    if (isSlotEmpty_(store))                { kind = 'skip'; note = '(empty in store)'; }
+    else if (store.source === 'OPAQUE')     { kind = 'skip'; note = '(speaker-managed)'; }
+    else if (slotsMatch_(store, hw))        { kind = 'skip'; note = '✓ already synced'; }
+    else                                    { kind = 'push'; note = ''; }
+    plan.push({slot:s, kind, note, store, hw});
   }
+  const toPush = plan.filter(p => p.kind === 'push');
+  if (toPush.length === 0) {
+    toast(`Nothing to push for ${spName} — all 6 slots already in sync.`);
+    clearDirty(devId);
+    return;
+  }
+  progressShow(`Pushing ${toPush.length} slot${toPush.length===1?'':'s'} to ${spName}`);
+  for (const p of plan) {
+    const label = `Slot ${p.slot}` +
+                  (p.kind === 'push'
+                    ? ` — ${slotName_(p.store)}`
+                    : ` ${p.note}`);
+    progressAddStep('s'+p.slot, label);
+    if (p.kind === 'skip') progressStep('s'+p.slot, 'skip', p.note);
+  }
+  // Fire bulk push (returns immediately with eta).
+  let info = null;
+  try {
+    info = await api(`/api/speaker/${encodeURIComponent(devId)}/push-all`, {method:'POST'});
+  } catch (e) {
+    progressStep('s'+plan[0].slot, 'error', e.message);
+    progressDone(); return;
+  }
+  if (!info || !info.ok) {
+    toast('Push failed: '+(info && info.error || 'unknown'));
+    progressDone(); return;
+  }
+  const eta = (info.eta_seconds || (toPush.length * 13));
+  const perSlot = (eta * 1000) / toPush.length;
+  // Sequentially mark each to-push slot running → done, time-sliced to match
+  // the backend worker's actual processing rate.
+  let i = 0;
+  for (const p of toPush) {
+    progressStep('s'+p.slot, 'running', `pushing… (~${(perSlot/1000).toFixed(0)}s)`);
+    progressBar(((i + 0.5) / toPush.length) * 95);
+    await new Promise(r => setTimeout(r, perSlot));
+    progressStep('s'+p.slot, 'done');
+    i++;
+  }
+  // Re-fetch hardware-presets to verify each push landed. LOCAL_INTERNET_RADIO
+  // pushes typically fail at the speaker (Bose-side bug) — surface that here.
+  progressBar(95);
+  try {
+    const hwR = await api(`/api/speaker/${encodeURIComponent(devId)}/hardware-presets`);
+    d.hw = normalizeHwSlots_(hwR.slots || [], hwR.ok);
+    for (const p of toPush) {
+      const newSynced = slotsMatch_(d.store[p.slot-1], d.hw[p.slot-1]);
+      if (!newSynced) {
+        progressStep('s'+p.slot, 'error',
+          'hardware did not save (Bose accepts /select but won\'t persist this source)');
+      }
+    }
+    renderSpeakerSlots(devId);
+    const allSynced = toPush.every(p => slotsMatch_(d.store[p.slot-1], d.hw[p.slot-1]));
+    if (allSynced) clearDirty(devId);
+  } catch (e) { /* verify-step failure is non-fatal */ }
+  progressBar(100);
+  progressDone(2500);
 }
 
-// ---- Library drawer ----
-function toggleLibrary() {
-  const d = document.getElementById('lib-drawer');
-  STATE.libOpen = !STATE.libOpen;
-  d.classList.toggle('open', STATE.libOpen);
-  document.getElementById('lib-toggle').textContent =
-    STATE.libOpen ? '📻 Hide stations' : '📻 Browse stations';
-  if (STATE.libOpen && STATE.libResults.length === 0) loadLibrary();
+// ---- Media sidebar (Phase 4) ----
+function toggleSidebar() {
+  const sb = document.getElementById('sidebar');
+  const collapsed = sb.classList.toggle('collapsed');
+  document.body.classList.toggle('sidebar-collapsed', collapsed);
+  document.getElementById('sb-handle-icon').textContent = collapsed ? '◨' : '◧';
+  document.getElementById('sb-handle-text').textContent = collapsed ? '' : 'Media';
+  try { localStorage.SIXBACK_SIDEBAR_COLLAPSED = collapsed ? '1' : '0'; } catch(e){}
+}
+
+function sidebarSelectTab(name) {
+  for (const t of document.querySelectorAll('.sb-tab')) {
+    t.classList.toggle('active', t.dataset.tab === name);
+  }
+  for (const p of document.querySelectorAll('.sb-panel')) {
+    p.classList.toggle('active', p.id === 'sb-panel-' + name);
+  }
+  STATE.sidebarTab = name;
+  refreshSidebarTargets();         // browser-option visibility may change
+  if (name === 'radio' && STATE.libResults.length === 0) loadLibrary();
+}
+
+// Stream tab: paste URL+Name, server-side validate, then user drags result tile.
+async function streamAddTile() {
+  const nameEl = document.getElementById('stream-name');
+  const urlEl  = document.getElementById('stream-url');
+  const imgEl  = document.getElementById('stream-img');
+  const btn    = document.getElementById('stream-add-btn');
+  const meta   = document.getElementById('stream-meta');
+  const name = nameEl.value.trim();
+  const url  = urlEl.value.trim();
+  const img  = imgEl.value.trim();
+  if (!name || !url) {
+    meta.className = 'sb-stream-meta bad'; meta.textContent = 'Name + URL required.';
+    return;
+  }
+  btn.disabled = true;
+  const origLabel = btn.textContent; btn.textContent = 'Validating…';
+  meta.className = 'sb-stream-meta'; meta.textContent = 'Probing stream…';
+  let v = null, lastErr = null;
+  for (const base of STATIONS_API_BASES) {
+    try {
+      const r = await fetch(base + '/validate-stream?url=' + encodeURIComponent(url), {mode:'cors'});
+      if (!r.ok) { lastErr = new Error('HTTP '+r.status); continue; }
+      v = await r.json();
+      STATIONS_API_BASE = base;
+      break;
+    } catch (e) { lastErr = e; }
+  }
+  btn.disabled = false; btn.textContent = origLabel;
+  if (!v) {
+    meta.className = 'sb-stream-meta bad';
+    meta.textContent = 'Validator unreachable: ' + (lastErr ? lastErr.message : 'unknown');
+    return;
+  }
+  if (!v.ok) {
+    meta.className = 'sb-stream-meta bad';
+    meta.textContent = '✗ ' + (v.error || 'invalid stream');
+    return;
+  }
+  // Use the auto-detected ICY name if user left it blank? No — name field was required.
+  // But we surface ICY metadata in the tooltip.
+  const tile = {
+    name,
+    streamUrl: v.redirected_to || url,    // follow server-side redirects
+    imageUrl: img,
+    icyName: v.icy_name || '',
+    contentType: v.content_type || '',
+    bitrate: v.icy_br || '',
+  };
+  STATE.streamTiles.push(tile);
+  try { localStorage.SIXBACK_STREAM_TILES = JSON.stringify(STATE.streamTiles); } catch(e){}
+  meta.className = 'sb-stream-meta ok';
+  meta.textContent = '✓ ' + (v.icy_name ? `${v.icy_name} · ` : '') +
+                     (v.content_type || '') + (v.icy_br ? ` · ${v.icy_br}k` : '');
+  nameEl.value = ''; urlEl.value = ''; imgEl.value = '';
+  renderStreamTiles();
+}
+
+function renderStreamTiles() {
+  const grid = document.getElementById('stream-grid');
+  if (!STATE.streamTiles.length) {
+    grid.innerHTML = '<div class="sb-empty">No custom streams yet. Add one above.</div>';
+    return;
+  }
+  grid.innerHTML = STATE.streamTiles.map((s, idx) => {
+    const payload = JSON.stringify({
+      name: s.name, streamUrl: s.streamUrl, imageUrl: s.imageUrl, uuid: 'stream-'+idx,
+    }).replace(/"/g,'&quot;');
+    const title = `${s.name} — ${s.icyName || s.contentType || 'stream'}${s.bitrate ? ' · '+s.bitrate+'k' : ''}`;
+    return `
+      <div class="lib-tile" draggable="false" data-payload="${payload}"
+           onclick="onLibraryTileClick(event)"
+           title="${esc(title)} — click to preview (browser only — Bose speakers don't save custom stream URLs reliably)">
+        ${s.imageUrl
+          ? `<img class="tile-logo" src="${esc(s.imageUrl)}" alt="" loading="lazy"
+                   onerror="this.outerHTML='<div class=&quot;tile-logo-ph&quot;>🔗</div>'">`
+          : '<div class="tile-logo-ph">🔗</div>'}
+        <div class="tile-name">${esc(s.name)}</div>
+        <div class="tile-meta">${esc(s.bitrate ? s.bitrate+'k' : (s.contentType || 'stream'))}
+          <button onclick="event.stopPropagation();streamRemoveTile(${idx})" title="Remove from list"
+                  style="float:right;padding:0 .3em;font-size:.9em;line-height:1;background:transparent;border:0;color:var(--mute);cursor:pointer">✕</button>
+        </div>
+      </div>`;
+  }).join('');
+}
+
+function streamRemoveTile(idx) {
+  STATE.streamTiles.splice(idx, 1);
+  try { localStorage.SIXBACK_STREAM_TILES = JSON.stringify(STATE.streamTiles); } catch(e){}
+  renderStreamTiles();
+}
+
+function streamLoadFromLocalStorage() {
+  try {
+    const raw = localStorage.SIXBACK_STREAM_TILES;
+    if (raw) STATE.streamTiles = JSON.parse(raw) || [];
+  } catch(e) { STATE.streamTiles = []; }
+  renderStreamTiles();
 }
 
 function onLibrarySearchInput() {
@@ -1542,14 +1997,210 @@ function onLibrarySearchInput() {
   STATE.libSearchTimer = setTimeout(loadLibrary, 350);
 }
 
+// ---- Preview / Target bar ----
+function onSidebarTargetChange() {
+  const v = document.getElementById('sb-target').value;
+  try { localStorage.SIXBACK_PREVIEW_TARGET = v; } catch(e){}
+  stopPreview();    // changing target stops the current preview
+}
+
+// Which preview targets make sense for the current sidebar tab.
+//   - Radio tab (TuneIn): only speakers — TuneIn IDs aren't stream URLs.
+//   - Stream tab (custom URL): only browser via Pi5 audio-proxy. Bose
+//     speakers don't reliably save LOCAL_INTERNET_RADIO presets, so we
+//     don't even offer that path.
+//   - DLNA: not implemented yet.
+function previewCapabilities() {
+  if (STATE.sidebarTab === 'radio')  return { browserOk: false, speakersOk: true  };
+  if (STATE.sidebarTab === 'stream') return { browserOk: true,  speakersOk: false };
+  return { browserOk: false, speakersOk: false };
+}
+
+function refreshSidebarTargets() {
+  const sel = document.getElementById('sb-target');
+  if (!sel) return;
+  // Preserve the CURRENT in-DOM value first; only fall back to localStorage
+  // or sensible default if it's gone. Older code reset to whatever was in
+  // localStorage every time, which silently dropped the live user pick if
+  // a speaker disappeared/reappeared during a refresh tick.
+  const live = sel.value || '';
+  const stored = (function(){ try { return localStorage.SIXBACK_PREVIEW_TARGET || ''; } catch(e) { return ''; } })();
+  // Build options based on the active source's capabilities. Showing a
+  // target that won't actually play would mislead users.
+  const caps = previewCapabilities();
+  const opts = [];
+  if (caps.speakersOk) {
+    for (const s of STATE.speakers) {
+      const label = (s.name || s.device_id).replace(/[<>&"']/g, '');
+      const dis = (s.status === 'offline') ? ' disabled' : '';
+      const dot = (s.status === 'offline') ? '⚫' : '🔊';
+      opts.push(`<option value="speaker:${s.device_id}"${dis}>${dot} ${label}</option>`);
+    }
+  }
+  if (caps.browserOk) {
+    opts.push('<option value="browser">💻 This browser</option>');
+  }
+  if (opts.length === 0) {
+    opts.push('<option value="none" disabled>(no preview target — feature pending)</option>');
+  }
+  sel.innerHTML = opts.join('');
+  // Distinguish "user has actively chosen" from "we still have the boot
+  // default of 'browser' from the initial <option>". Only if the user has
+  // ever made a pick (stored present, or live is not the trivial 'browser'
+  // default) do we treat that as authoritative. Otherwise default to the
+  // first online speaker — that's the obviously-useful target when the user
+  // is operating a SoundTouch via this UI.
+  const all = [...sel.options];
+  const isUsable = v => all.some(o => o.value === v && !o.disabled);
+  const userPicked = (!!stored) || (live && live !== 'browser');
+  let pick;
+  if (userPicked) {
+    if (isUsable(live))        pick = live;
+    else if (isUsable(stored)) pick = stored;
+    else { const firstSp = all.find(o => o.value.startsWith('speaker:') && !o.disabled);
+           pick = firstSp ? firstSp.value : 'browser'; }
+  } else {
+    const firstSp = all.find(o => o.value.startsWith('speaker:') && !o.disabled);
+    pick = firstSp ? firstSp.value : 'browser';
+  }
+  sel.value = pick;
+  // Only persist if the user actively picked (don't lock in the default).
+  if (userPicked) {
+    try { localStorage.SIXBACK_PREVIEW_TARGET = pick; } catch(e){}
+  }
+}
+
+// Returns a human-readable name for whatever the dropdown is currently set to,
+// so toasts can say "Playing X on Emma" instead of just "speaker:EC...".
+function previewTargetLabel(target) {
+  if (target === 'browser') return 'This browser';
+  if (target === 'none' || !target) return '(no target)';
+  const m = /^speaker:(.+)$/.exec(target);
+  if (!m) return target;
+  const sp = STATE.speakers.find(s => s.device_id === m[1]);
+  return sp ? (sp.name || m[1]) : m[1];
+}
+
+let _previewAudio = null;
+let _previewTile  = null;
+
+function stopPreview() {
+  if (_previewAudio) {
+    try {
+      // Detach BEFORE we clear src — otherwise setting src='' triggers an
+      // "empty src" error event on the dead element that lands in our
+      // onerror handler and pops a spurious "Browser preview failed —
+      // CORS/codec" toast for the previous tile while the next tile is
+      // already playing fine. Verified 2026-05-23 against 1Live → SWR3 swap.
+      _previewAudio.onerror = null;
+      _previewAudio.onplaying = null;
+      _previewAudio.onstalled = null;
+      _previewAudio.pause();
+      _previewAudio.removeAttribute('src');
+      _previewAudio.load();
+    } catch(e){}
+    _previewAudio = null;
+  }
+  if (_previewTile) { _previewTile.classList.remove('previewing'); _previewTile = null; }
+  document.getElementById('sb-stop-btn').style.display = 'none';
+  const pl = document.getElementById('sb-preview-line');
+  pl.classList.remove('active'); pl.textContent = '';
+}
+
+function setPreviewIndicator(label) {
+  const pl = document.getElementById('sb-preview-line');
+  pl.classList.add('active');
+  pl.textContent = '▶ ' + label;
+  document.getElementById('sb-stop-btn').style.display = '';
+}
+
+async function previewLibraryTile(tileEl) {
+  if (!tileEl || !tileEl.dataset.payload) return;
+  let p;
+  try { p = JSON.parse(tileEl.dataset.payload); } catch(e) { return; }
+  const target = document.getElementById('sb-target').value || '';
+  if (!target || target === 'none') {
+    toast('No preview target available for this source — see "Preview on:" dropdown.', 'error');
+    return;
+  }
+  // Toggle: clicking the currently-previewing tile stops it.
+  if (_previewTile === tileEl) { stopPreview(); return; }
+  stopPreview();
+  _previewTile = tileEl;
+  tileEl.classList.add('previewing');
+
+  // Tell the user EXPLICITLY where we're sending the audio so the visible
+  // target and the actual target can never silently diverge.
+  toast(`Playing "${p.name}" on ${previewTargetLabel(target)}`);
+
+  if (target === 'browser') {
+    // Browser preview works for stream URLs only — TuneIn needs a speaker.
+    if (p.libSource === 'TUNEIN' || !p.streamUrl) {
+      toast('Browser preview only works for direct stream URLs. Pick a speaker for TuneIn.', 'error');
+      stopPreview();
+      return;
+    }
+    // Route through the Pi5 audio-proxy: rewrites Access-Control-Allow-Origin
+    // so any HTTP radio stream plays in <audio>. Without this CORS fails on
+    // most non-CDN streams.
+    const proxied = STATIONS_API_BASE + '/audio-proxy?url=' + encodeURIComponent(p.streamUrl);
+    _previewAudio = new Audio();
+    _previewAudio.src = proxied;
+    _previewAudio.onplaying = () => setPreviewIndicator(p.name + ' (browser via proxy)');
+    _previewAudio.onerror = () => {
+      const me = _previewAudio && _previewAudio.error;
+      toast('Browser preview failed' + (me ? ' (code '+me.code+')' : '') +
+            ' — codec unsupported by this browser? Try a speaker target.', 'error');
+      stopPreview();
+    };
+    try { await _previewAudio.play(); }
+    catch (e) { toast('Browser preview blocked: '+e.message, 'error'); stopPreview(); }
+    return;
+  }
+  // Speaker target
+  const m = /^speaker:(.+)$/.exec(target);
+  if (!m) { stopPreview(); return; }
+  const devId = m[1];
+  const sp = STATE.speakers.find(s => s.device_id === devId);
+  setPreviewIndicator(p.name + (sp ? ' → ' + (sp.name || devId) : ''));
+  try {
+    const body = (p.libSource === 'TUNEIN') ? {
+      source: 'TUNEIN', name: p.name, stationId: p.stationId,
+    } : {
+      source: 'LOCAL_INTERNET_RADIO', name: p.name, streamUrl: p.streamUrl,
+    };
+    const r = await api(`/api/speaker/${encodeURIComponent(devId)}/play-source`, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(body),
+    });
+    if (!r || !r.ok) {
+      toast('Speaker preview failed: ' + (r && r.error ? r.error : 'HTTP '+(r&&r.select)), 'error');
+      stopPreview();
+    } else {
+      kickPoll(devId);
+    }
+  } catch (e) {
+    toast('Speaker preview error: '+e.message, 'error');
+    stopPreview();
+  }
+}
+
+function onLibraryTileClick(ev) {
+  // Suppress click if this was actually the end of a drag — the drag handler
+  // sets STATE._lastDragEndedAt so we ignore clicks within ~250ms after.
+  if (Date.now() - (STATE._lastDragEndedAt || 0) < 250) return;
+  previewLibraryTile(ev.currentTarget);
+}
+
 async function loadLibrary() {
   const q = document.getElementById('lib-q').value.trim();
-  const country = document.getElementById('lib-country').value;
   const grid = document.getElementById('lib-grid');
-  grid.innerHTML = '<div class="lib-empty">Loading…</div>';
-  const pathQ = (q.length >= 2)
-    ? `/search?q=${encodeURIComponent(q)}&limit=24` + (country ? `&country=${country}` : '')
-    : `/popular?limit=24` + (country ? `&country=${country}` : '');
+  if (q.length < 2) {
+    grid.innerHTML = '<div class="sb-empty">Type ≥2 characters to search.</div>';
+    STATE.libResults = []; return;
+  }
+  grid.innerHTML = '<div class="sb-empty">Loading…</div>';
+  const pathQ = `/tunein-search?q=${encodeURIComponent(q)}&limit=24`;
   let lastErr = null;
   for (const base of STATIONS_API_BASES) {
     try {
@@ -1564,16 +2215,15 @@ async function loadLibrary() {
       lastErr = e;
     }
   }
-  grid.innerHTML = `<div class="lib-empty">Station proxy not reachable.<br>
+  grid.innerHTML = `<div class="sb-empty">Station proxy not reachable.<br>
     Last error: ${esc(lastErr ? lastErr.message : 'unknown')}<br><br>
-    Tried: <code>${esc(STATIONS_API_BASES.join(', '))}</code><br>
-    Override via DevTools: <code>localStorage.SIXBACK_STATIONS_BASE='http://...'</code></div>`;
+    Tried: <code>${esc(STATIONS_API_BASES.join(', '))}</code></div>`;
 }
 
 function renderLibrary() {
   const grid = document.getElementById('lib-grid');
   if (STATE.libResults.length === 0) {
-    grid.innerHTML = '<div class="lib-empty">No stations found.</div>';
+    grid.innerHTML = '<div class="sb-empty">No stations found.</div>';
     return;
   }
   grid.innerHTML = STATE.libResults.map(libTile).join('');
@@ -1581,21 +2231,22 @@ function renderLibrary() {
 
 function libTile(s) {
   const logoUrl = s.logo_url ? STATIONS_API_BASE + s.logo_url.replace(/^.*\/sixback\/stations/, '') : '';
-  const country = s.country || s.countrycode || '';
-  const meta = [country, s.codec, s.bitrate ? s.bitrate+'k' : ''].filter(Boolean).join(' · ');
-  // Encode payload into data-attributes so dragstart can reconstruct it
+  const meta = ['TuneIn', s.station_id, s.bitrate ? s.bitrate+'k' : '', s.formats]
+                  .filter(Boolean).join(' · ');
   const payload = JSON.stringify({
-    name: s.name, streamUrl: s.stream_url,
-    imageUrl: logoUrl, uuid: s.uuid,
+    libSource: 'TUNEIN',
+    name: s.name, stationId: s.station_id,
+    imageUrl: logoUrl, uuid: 'tunein-'+s.station_id,
   }).replace(/"/g,'&quot;');
   return `
     <div class="lib-tile" draggable="true" data-payload="${payload}"
          ondragstart="onLibraryDragStart(event)" ondragend="onLibraryDragEnd(event)"
-         title="${esc(s.name)} — ${esc(meta)}">
+         onclick="onLibraryTileClick(event)"
+         title="${esc(s.name)} — ${esc(meta)}${s.subtext ? ' — '+esc(s.subtext) : ''} — click to preview, drag to set">
       ${logoUrl
         ? `<img class="tile-logo" src="${esc(logoUrl)}" alt="" loading="lazy"
-                 onerror="this.outerHTML='<div class=&quot;tile-logo-ph&quot;>📻</div>'">`
-        : '<div class="tile-logo-ph">📻</div>'}
+                 onerror="this.outerHTML='<div class=&quot;tile-logo-ph&quot;>📡</div>'">`
+        : `<div class="tile-logo-ph">📡</div>`}
       <div class="tile-name">${esc(s.name)}</div>
       <div class="tile-meta">${esc(meta)}</div>
     </div>`;
@@ -1608,9 +2259,11 @@ function onLibraryDragStart(ev) {
   catch(e) { ev.preventDefault(); return; }
   STATE.dragSource = {
     kind: 'library',
+    libSource: payload.libSource || 'LOCAL_INTERNET_RADIO',
     name: payload.name,
-    streamUrl: payload.streamUrl,
-    imageUrl: payload.imageUrl,
+    streamUrl: payload.streamUrl || '',
+    stationId: payload.stationId || '',
+    imageUrl: payload.imageUrl || '',
     uuid: payload.uuid,
   };
   el.classList.add('dragging');
@@ -1628,16 +2281,49 @@ function onLibraryDragEnd(ev) {
 
 // ---- Speaker actions ----
 async function actSpeaker(devId, action) {
-  const verb = ({migrate:'Migrate',revert:'Revert',reboot:'Reboot',refresh:'Status check'})[action];
-  if ((action==='migrate' || action==='revert' || action==='reboot') &&
+  const verb = ({migrate:'Migrate',reboot:'Reboot',refresh:'Status check'})[action];
+  if ((action==='migrate' || action==='reboot') &&
       !confirm(`Really ${verb}? This writes to the speaker via Telnet:17000.`)) return;
   toast(verb+' running…');
   try {
     let r;
     if (action === 'refresh') {
-      r = await api('/api/speakers/refresh-status', {method:'POST'});
-      STATE.speakers = r.speakers || STATE.speakers;
-      renderSpeakers();
+      // Per-speaker refresh: pull both metadata (status, cloud_url, …) AND
+      // hardware presets, so the user sees what's actually on the box. Wrapped
+      // in a progress modal so user cannot fire other ops in parallel.
+      const spName = (STATE.speakers.find(s => s.device_id === devId)?.name || devId);
+      progressShow(`Refreshing ${spName}`, [
+        {id:'status', label:'Speaker status (Telnet probe + IP+cloud)'},
+        {id:'hwget',  label:'Read hardware-presets from /presets'},
+        {id:'render', label:'Update local view'},
+      ]);
+      progressStep('status', 'running');
+      progressBar(15);
+      try {
+        const sr = await api('/api/speakers/refresh-status', {method:'POST'});
+        STATE.speakers = sr.speakers || STATE.speakers;
+        renderSpeakers();
+        const me = STATE.speakers.find(s => s.device_id === devId);
+        progressStep('status', 'done', me ? me.status : '');
+      } catch (e) { progressStep('status', 'error', e.message); progressDone(); return; }
+      progressBar(50);
+      progressStep('hwget', 'running');
+      try {
+        const hwR = await api('/api/speaker/'+encodeURIComponent(devId)+'/hardware-presets');
+        const hwSlots = normalizeHwSlots_(hwR.slots || [], hwR.ok);
+        const d = STATE.presetsByDev[devId] = STATE.presetsByDev[devId] || {store: normalizeStoreSlots_([]), hw: hwSlots};
+        d.hw = hwSlots;
+        d.hwReachable = hwR.ok !== false;
+        const populated = hwSlots.filter(s => !isSlotEmpty_(s)).length;
+        progressStep('hwget', hwR.ok ? 'done' : 'error', hwR.ok ? `${populated} of 6 slots populated` : 'speaker /presets unreachable');
+      } catch (e) { progressStep('hwget', 'error', e.message); }
+      progressBar(80);
+      progressStep('render', 'running');
+      renderSpeakerSlots(devId);
+      applyPlayingHighlight(devId);
+      progressStep('render', 'done');
+      progressDone(800);
+      return;
     } else {
       r = await api('/api/speaker/'+encodeURIComponent(devId)+'/'+action, {method:'POST'});
       toast(r.message || (verb+' done'), r.ok!==false ? 'success':'error');
@@ -2039,7 +2725,82 @@ function closeModal(id) { document.getElementById(id).classList.remove('open'); 
 // ---- Utility ----
 function esc(s) { return String(s||'').replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
+// ============================================================================
+// Progress modal helpers
+// ----------------------------------------------------------------------------
+// Long-running ops (🔄 Status, push-to-speaker) get a dialog with per-step
+// ticks and a progress bar. Backdrop blocks all underlying clicks. The user
+// cannot start a second op concurrent with one already running.
+//
+// Lifecycle:
+//   progressShow(title, steps?)        — open modal, optionally pre-create steps
+//   progressAddStep(id, label)         — append a step (pending)
+//   progressStep(id, status, extra?)   — mark a step pending|running|done|error|skip
+//   progressBar(percent)               — set the visible bar (0–100)
+//   progressDone(autoCloseMs)          — enable Close button, optional auto-close
+//   progressClose()                    — close and clear
+// ============================================================================
+const PSTEP_ICON = { pending: '○', running: '↻', done: '✓', error: '✗', skip: '⊘' };
+let _progressOpen = false;
+
+function progressShow(title, steps) {
+  document.getElementById('pmodal-title').textContent = title || 'Working…';
+  document.getElementById('pmodal-steps').innerHTML = '';
+  document.getElementById('pmodal-bar-fill').style.width = '0%';
+  document.getElementById('pmodal-close').disabled = true;
+  document.getElementById('pmodal-back').classList.add('open');
+  _progressOpen = true;
+  if (Array.isArray(steps)) for (const s of steps) progressAddStep(s.id, s.label);
+}
+
+function progressAddStep(id, label) {
+  const host = document.getElementById('pmodal-steps');
+  const row = document.createElement('div');
+  row.className = 'pstep pending';
+  row.dataset.stepId = id;
+  row.innerHTML = `<span class="pstep-icon">${PSTEP_ICON.pending}</span>` +
+                  `<span class="pstep-label">${esc(label)}</span>` +
+                  `<span class="pstep-extra"></span>`;
+  host.appendChild(row);
+}
+
+function progressStep(id, status, extra) {
+  const row = document.querySelector(`#pmodal-steps .pstep[data-step-id="${CSS.escape(id)}"]`);
+  if (!row) return;
+  row.className = 'pstep ' + status;
+  row.querySelector('.pstep-icon').textContent = PSTEP_ICON[status] || '?';
+  if (extra !== undefined) row.querySelector('.pstep-extra').textContent = extra;
+}
+
+function progressBar(percent) {
+  const p = Math.max(0, Math.min(100, percent|0));
+  document.getElementById('pmodal-bar-fill').style.width = p + '%';
+}
+
+function progressDone(autoCloseMs) {
+  document.getElementById('pmodal-close').disabled = false;
+  progressBar(100);
+  if (autoCloseMs > 0) setTimeout(progressClose, autoCloseMs);
+}
+
+function progressClose() {
+  document.getElementById('pmodal-back').classList.remove('open');
+  _progressOpen = false;
+}
+
 // ---- Boot ----
+// Sidebar: restore collapse state + tab, prime radio results once visible.
+try {
+  if (localStorage.SIXBACK_SIDEBAR_COLLAPSED === '1') {
+    document.getElementById('sidebar').classList.add('collapsed');
+    document.body.classList.add('sidebar-collapsed');
+    document.getElementById('sb-handle-icon').textContent = '◨';
+    document.getElementById('sb-handle-text').textContent = '';
+  }
+} catch(e){}
+streamLoadFromLocalStorage();
+// Radio tab needs an explicit query (TuneIn-only); leave grid showing
+// "Type ≥2 characters" until the user types.
 loadStatus();
 loadSpeakers().then(() => startNowPlayingPoll());
 setInterval(loadStatus, 10000);
@@ -2048,6 +2809,20 @@ setInterval(loadStatus, 10000);
 // das die UI sofort wieder an.
 setTimeout(pollOnline, 1500);
 </script>
+
+<!-- Progress modal — used by 🔄 Status and push-all flows. The backdrop is
+     pointer-event-blocking when open, so the user cannot fire a second
+     operation mid-flight. -->
+<div class="pmodal-back" id="pmodal-back" aria-hidden="true">
+  <div class="pmodal" role="dialog" aria-modal="true" aria-labelledby="pmodal-title">
+    <h3 id="pmodal-title">…</h3>
+    <div class="pmodal-bar"><div id="pmodal-bar-fill"></div></div>
+    <div class="pmodal-steps" id="pmodal-steps"></div>
+    <div class="pmodal-foot">
+      <button id="pmodal-close" onclick="progressClose()" disabled>Close</button>
+    </div>
+  </div>
+</div>
 
 <footer style="margin-top:3em;padding-top:1em;border-top:1px solid #e1ddd2;color:#777;font-size:.8em;text-align:center">
   SixBack &copy; 2026 Dirk Tostmann &middot;
