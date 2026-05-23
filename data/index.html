@@ -133,11 +133,18 @@
                                  white-space: nowrap; }
   .preset .slot-row .row-name.empty { font-style: italic; font-weight: 400; color: var(--mute); }
   .preset .slot-row.store .row-name { color: var(--warn); }    /* unsaved edit */
-  .preset .slot-push { margin-top: .35em; padding: .25em .55em; font-size: .78em;
+  .preset .slot-actions { display: flex; gap: .35em; margin-top: .35em; align-items: stretch; }
+  .preset .slot-push { padding: .25em .55em; font-size: .78em;
                        background: var(--warn); color: #fff; border: 1px solid var(--warn);
-                       border-radius: 4px; cursor: pointer; width: 100%; }
+                       border-radius: 4px; cursor: pointer; flex: 1 1 auto; }
   .preset .slot-push:hover { filter: brightness(.92); }
   .preset .slot-push:disabled { opacity: .5; cursor: wait; }
+  .preset .slot-undo { padding: .25em .5em; font-size: .78em; line-height: 1;
+                       background: transparent; color: var(--mute);
+                       border: 1px solid var(--mute); border-radius: 4px;
+                       cursor: pointer; flex: 0 0 auto; }
+  .preset .slot-undo:hover { color: #fff; background: var(--mute); }
+  .preset .slot-undo:disabled { opacity: .5; cursor: wait; }
   .preset .slot-single { display: flex; align-items: center; gap: .5em; padding: .3em 0; }
   .preset .slot-single .row-cover, .preset .slot-single .row-cover-ph {
                        width: 48px; height: 48px; font-size: 1.4em; }
@@ -1142,6 +1149,8 @@ function actionButtonsHtml(s) {
   return power + vol + migrate +
     `<button onclick="actSpeaker('${s.device_id}','reboot')">⟲ Reboot</button>` +
     `<button onclick="actSpeaker('${s.device_id}','refresh')">🔄 Status</button>` +
+    `<button title="Download all 6 store-side preset slots of this speaker as a JSON file" onclick="exportPresetsSet('${s.device_id}')">⬇ Export</button>` +
+    `<button title="Upload a previously exported preset-set JSON for this speaker (replaces store; push to hardware afterwards)" onclick="importPresetsSet('${s.device_id}')">⬆ Import</button>` +
     `<button title="Download diagnostic snapshot — BMX endpoints + Telnet config — to send us for unsupported-source debugging" onclick="downloadSnapshot('${s.device_id}')">📋 Snapshot</button>` +
     `<button class="danger" onclick="removeSpeaker('${s.device_id}')">✕</button>`;
 }
@@ -1319,7 +1328,10 @@ function presetCard(devId, slotNum) {
         slotIcon_(store, false) +
         `<span class="row-name${storeEmpty ? ' empty' : ''}">${esc(storeEmpty ? '(cleared)' : slotName_(store))}</span>` +
       `</div>` +
-      `<button class="slot-push" onclick="event.stopPropagation(); pushSingleSlot('${esc(devId)}', ${slotNum})">push slot ${slotNum} →</button>`;
+      `<div class="slot-actions">` +
+        `<button class="slot-push" onclick="event.stopPropagation(); pushSingleSlot('${esc(devId)}', ${slotNum})">push slot ${slotNum} →</button>` +
+        `<button class="slot-undo" title="Cancel — discard this unsaved change and revert this slot to the speaker's current state" onclick="event.stopPropagation(); revertSlot('${esc(devId)}', ${slotNum})">✕</button>` +
+      `</div>`;
   }
 
   return `
@@ -1449,6 +1461,36 @@ async function pushSingleSlot(devId, slot) {
   progressDone(1500);   // auto-close after 1.5s grace
 }
 
+// Cancel an unsaved (store != hw) edit on a slot: tells the backend to
+// re-read /presets from the speaker and replace the store slot with the
+// hardware state. Hardware is untouched. UI re-renders → "unsaved" badge
+// disappears, slot returns to "✓ synced".
+async function revertSlot(devId, slot) {
+  const d = STATE.presetsByDev[devId];
+  if (!d) return;
+  // No-op UX guard: if store already matches hw, nothing to undo.
+  if (slotsMatch_(d.store[slot-1] || {source:'EMPTY'}, d.hw[slot-1] || {source:''})) {
+    toast(`Slot ${slot} already in sync — nothing to undo`);
+    return;
+  }
+  try {
+    const r = await api(`/api/speaker/${encodeURIComponent(devId)}/preset/${slot}/revert`, {method:'POST'});
+    if (!r || !r.ok) { toast('Undo failed: ' + ((r && r.error) || 'unknown'), 'error'); return; }
+    await loadPresetsFor(devId);
+    // Clear the per-speaker dirty flag if no other slot is still unsaved.
+    const stillDirty = (d.store || []).some((s, i) =>
+      !slotsMatch_(s, (d.hw || [])[i] || {source:''}));
+    if (!stillDirty) STATE.dirtySpeakers.delete(devId);
+    updatePushVisibility(devId);
+    toast(r.action === 'cleared'
+          ? `Slot ${slot} reset (speaker has it empty)`
+          : `Slot ${slot} reverted to "${r.name || r.source || 'speaker state'}"`,
+          'success');
+  } catch (e) {
+    toast('Undo failed: ' + e.message, 'error');
+  }
+}
+
 function onPresetDragStart(ev) {
   const el = ev.currentTarget;
   if (el.getAttribute('draggable') !== 'true') { ev.preventDefault(); return; }
@@ -1512,13 +1554,15 @@ function onPresetDragOver(ev) {
   if (STATE.dragSource && STATE.dragSource.kind === 'slot' &&
       el.dataset.dev === STATE.dragSource.dev &&
       parseInt(el.dataset.slot,10) === STATE.dragSource.slot) return;
-  if (tgtSource === 'OPAQUE') {
-    el.classList.add('drop-blocked');
-    dt.dropEffect = 'none';
-  } else {
-    el.classList.add('drop-target');
-    dt.dropEffect = (STATE.dragSource && STATE.dragSource.kind === 'slot') ? 'move' : 'copy';
-  }
+  // OPAQUE target slots are writable too — the store overwrite is harmless,
+  // push will /select+long-press which the speaker accepts as replacement.
+  el.classList.add('drop-target');
+  // Cross-speaker slot→slot = copy; within-speaker slot→slot = move (swap);
+  // library/external = copy.
+  const xSpeaker = STATE.dragSource && STATE.dragSource.kind === 'slot' &&
+                   STATE.dragSource.dev !== el.dataset.dev;
+  dt.dropEffect = (STATE.dragSource && STATE.dragSource.kind === 'slot' && !xSpeaker)
+                  ? 'move' : 'copy';
 }
 
 function onPresetDragLeave(ev) {
@@ -1569,10 +1613,11 @@ async function onPresetDrop(ev) {
   const el = ev.currentTarget;
   el.classList.remove('drop-target','drop-blocked');
   const dst = { dev: el.dataset.dev, slot: parseInt(el.dataset.slot, 10) };
-  if (el.dataset.source === 'OPAQUE') {
-    toast('Speaker-managed slot — re-record at speaker via long-press');
-    return;
-  }
+  // Note: dropping ONTO an OPAQUE (DLNA/STORED_MUSIC) slot is fine — the
+  // store overwrite is just a TUNEIN entry, and the subsequent push to
+  // hardware does /select + long-press which the speaker accepts as
+  // replacement. Dragging FROM an OPAQUE slot stays disabled at the
+  // source side (presetCard sets draggable=false).
 
   // External payload route: cross-window drag (different tab/window of the
   // same or another SixBack), or .json file dropped from the desktop.
@@ -1631,8 +1676,59 @@ async function onPresetDrop(ev) {
     return;
   }
 
-  // Slot-from-slot swap (existing behavior)
+  // Slot-from-slot drop. Two flavors:
+  //   - WITHIN the same speaker -> SWAP (existing /api/preset/swap)
+  //   - ACROSS speakers         -> COPY (PUT target with source slot's data;
+  //                                source slot untouched). Swap across boxes
+  //                                would destroy a preset on the source box,
+  //                                which is rarely what the user wants —
+  //                                copy keeps both sides intact.
   if (src.dev === dst.dev && src.slot === dst.slot) return;
+
+  if (src.dev !== dst.dev) {
+    // Read source slot data from local STATE (no extra round-trip).
+    const sd = STATE.presetsByDev[src.dev];
+    const srcSlot = sd && sd.store && sd.store[src.slot-1];
+    if (!srcSlot || isSlotEmpty_(srcSlot)) {
+      toast('Source slot is empty — nothing to copy', 'error');
+      return;
+    }
+    if (srcSlot.source === 'OPAQUE') {
+      // OPAQUE/DLNA presets carry a raw ContentItem that's bound to the
+      // source speaker's account/UUID — cross-copy isn't guaranteed to
+      // work on a different box. We could still PUT it, but better fail
+      // loud than silently copy something that won't play.
+      toast('OPAQUE/DLNA preset cannot be copied across speakers — re-record at the target via long-press', 'error');
+      return;
+    }
+    const putBody = {
+      source:    srcSlot.source,
+      name:      srcSlot.name || '',
+      stationId: srcSlot.stationId || '',
+      streamUrl: srcSlot.streamUrl || '',
+      imageUrl:  srcSlot.imageUrl  || '',
+    };
+    try {
+      const r = await api(`/api/speaker/${encodeURIComponent(dst.dev)}/preset/${dst.slot}`, {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(putBody),
+      });
+      if (r && r.ok) {
+        markDirty(dst.dev);
+        toast(`Copied "${putBody.name || srcSlot.source}" → ${dst.dev.substring(0,6)}… slot ${dst.slot}. Click push to save on speaker.`);
+        loadPresetsFor(dst.dev);
+        kickPoll(dst.dev);
+      } else {
+        toast('Copy failed: ' + ((r && r.error) || 'unknown'), 'error');
+      }
+    } catch (e) {
+      toast('Copy failed: ' + e.message, 'error');
+    }
+    return;
+  }
+
+  // Within-speaker: swap.
   toast('Swapping…');
   try {
     const r = await api('/api/preset/swap', {
@@ -1642,14 +1738,9 @@ async function onPresetDrop(ev) {
     });
     if (r && r.ok) {
       markDirty(src.dev);
-      if (dst.dev !== src.dev) markDirty(dst.dev);
-      toast(`Swap done in store — click per-slot push (or Push-All) on affected speakers to save to hardware`);
+      toast(`Swap done in store — click per-slot push (or Push-All) to save to hardware`);
       loadPresetsFor(src.dev);
       kickPoll(src.dev);
-      if (dst.dev !== src.dev) {
-        loadPresetsFor(dst.dev);
-        kickPoll(dst.dev);
-      }
     } else {
       toast('Swap failed: '+(r && r.error || 'unknown'));
     }
@@ -2338,6 +2429,63 @@ async function removeSpeaker(devId) {
   catch(e) { toast(e.message, 'error'); }
 }
 
+// ---- Per-speaker Export/Import preset-set ----
+function exportPresetsSet(devId) {
+  // Browser-native download — backend sends Content-Disposition: attachment.
+  const url = `/api/speaker/${encodeURIComponent(devId)}/presets/export-set`;
+  const a = document.createElement('a');
+  a.href = url;
+  a.style.display = 'none';
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => a.remove(), 0);
+}
+
+function importPresetsSet(devId) {
+  const inp = document.createElement('input');
+  inp.type = 'file';
+  inp.accept = '.json,application/json';
+  inp.style.display = 'none';
+  inp.addEventListener('change', async () => {
+    const f = inp.files && inp.files[0];
+    inp.remove();
+    if (!f) return;
+    let payload;
+    try {
+      const text = await f.text();
+      payload = JSON.parse(text);
+    } catch (e) {
+      toast('Selected file is not valid JSON', 'error');
+      return;
+    }
+    if (payload && payload.exported_from && payload.exported_from !== devId) {
+      const okGo = confirm(
+        `This file was exported from a different speaker (${payload.exported_from}).\n` +
+        `Import anyway into this speaker (${devId})?`);
+      if (!okGo) return;
+    }
+    try {
+      const r = await api(`/api/speaker/${encodeURIComponent(devId)}/presets/import-set`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload),
+      });
+      if (r && r.ok) {
+        markDirty(devId);
+        toast(`Imported ${r.imported} preset(s) into store — click Push 1-6 to write to speaker hardware.`, 'success');
+        await loadPresetsFor(devId);
+        kickPoll(devId);
+      } else {
+        toast('Import failed: ' + ((r && r.error) || 'unknown'), 'error');
+      }
+    } catch (e) {
+      toast('Import failed: ' + e.message, 'error');
+    }
+  });
+  document.body.appendChild(inp);
+  inp.click();
+}
+
 let g_snapDev = null;
 let g_snapHasStored = false;
 
@@ -2548,8 +2696,64 @@ async function pollUntilScanDone() {
   toast('Scan still running — UI will refresh on next /api/status tick', 'error');
 }
 
+// Global "🔄 Refresh status" toolbar button. Pulls inventory-side status for
+// all speakers (Telnet+IP+cloud probe) AND re-fetches /presets from each one
+// so the dual-row "on speaker" view reflects reality. Wrapped in a progress
+// modal so user sees per-speaker steps + cannot fire other ops in parallel.
 async function refreshStatuses() {
-  await actSpeaker('all', 'refresh');
+  const speakers = (STATE.speakers || []).slice();
+  if (speakers.length === 0) {
+    toast('No speakers in inventory — use ↻ Discover or + Add manually', 'error');
+    return;
+  }
+  progressShow(`Refresh status (${speakers.length} speaker${speakers.length===1?'':'s'})`);
+  progressAddStep('inv', `Inventory probe (Telnet/cloud) — all ${speakers.length}`);
+  for (const s of speakers) {
+    progressAddStep('hw-' + s.device_id, `Read hardware presets — ${s.name || s.device_id}`);
+  }
+  progressBar(2);
+
+  // Step 1: bulk inventory refresh.
+  progressStep('inv', 'running');
+  try {
+    const sr = await api('/api/speakers/refresh-status', {method: 'POST'});
+    STATE.speakers = sr.speakers || STATE.speakers;
+    renderSpeakers();
+    progressStep('inv', 'done', `${(sr.speakers || []).length} probed`);
+  } catch (e) {
+    progressStep('inv', 'error', e.message);
+    progressDone(0);
+    return;
+  }
+  progressBar(Math.round(100 / (speakers.length + 1)));
+
+  // Step 2: per-speaker hardware-presets — sequentially, so each step lights
+  // up in the UI individually instead of all going green at once.
+  let done = 1;
+  const total = speakers.length + 1;
+  for (const s of speakers) {
+    const sid = s.device_id;
+    progressStep('hw-' + sid, 'running');
+    try {
+      const hwR = await api(`/api/speaker/${encodeURIComponent(sid)}/hardware-presets`);
+      const hwSlots = normalizeHwSlots_(hwR.slots || [], hwR.ok);
+      const d = STATE.presetsByDev[sid] = STATE.presetsByDev[sid] ||
+                { store: normalizeStoreSlots_([]), hw: hwSlots };
+      d.hw = hwSlots;
+      d.hwReachable = hwR.ok !== false;
+      renderSpeakerSlots(sid);
+      applyPlayingHighlight(sid);
+      updatePushVisibility(sid);
+      const populated = hwSlots.filter(x => !isSlotEmpty_(x)).length;
+      progressStep('hw-' + sid, hwR.ok ? 'done' : 'error',
+                   hwR.ok ? `${populated}/6 populated` : 'unreachable');
+    } catch (e) {
+      progressStep('hw-' + sid, 'error', e.message);
+    }
+    done++;
+    progressBar(Math.round((done / total) * 100));
+  }
+  progressDone(1200);
 }
 
 // ---- Add modal ----
@@ -2696,14 +2900,57 @@ async function submitGroupSync() {
   const target_device_ids = Array.from(document.getElementById('g-targets').selectedOptions)
     .map(o => o.value).filter(v => v !== source_device_id);
   if (target_device_ids.length === 0) { toast('No targets selected', 'error'); return; }
+  closeModal('modal-group');
+
+  const srcName = (STATE.speakers.find(s => s.device_id === source_device_id) || {}).name || source_device_id;
+  progressShow(`Copy presets from "${srcName}"`);
+  progressAddStep('xfer', `Copy 6 store slots → ${target_device_ids.length} target(s)`);
+  for (const tid of target_device_ids) {
+    const nm = (STATE.speakers.find(s => s.device_id === tid) || {}).name || tid;
+    progressAddStep('reload-' + tid, `Refresh "${nm}" preset view`);
+  }
+  progressBar(5);
+
+  progressStep('xfer', 'running');
+  let synced = 0;
   try {
-    const r = await api('/api/group/sync', {method:'POST',
-      headers:{'Content-Type':'application/json'},
+    const r = await api('/api/group/sync', {method: 'POST',
+      headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({source_device_id, target_device_ids})});
-    closeModal('modal-group');
-    await loadSpeakers();
-    toast(`Presets transferred to ${r.synced_to} speaker(s)`, 'success');
-  } catch(e) { toast(e.message, 'error'); }
+    if (r && r.ok) {
+      synced = r.synced_to | 0;
+      progressStep('xfer', 'done', `${synced} speaker(s)`);
+    } else {
+      progressStep('xfer', 'error', (r && r.error) || 'unknown');
+      progressDone(0);
+      return;
+    }
+  } catch (e) {
+    progressStep('xfer', 'error', e.message);
+    progressDone(0);
+    return;
+  }
+
+  // Pro Target: dual-row neu rendern + dirty markieren -> push-Buttons sichtbar.
+  let done = 1;
+  const total = 1 + target_device_ids.length;
+  progressBar(Math.round((done / total) * 100));
+  for (const tid of target_device_ids) {
+    progressStep('reload-' + tid, 'running');
+    try {
+      markDirty(tid);
+      await loadPresetsFor(tid);
+      progressStep('reload-' + tid, 'done');
+    } catch (e) {
+      progressStep('reload-' + tid, 'error', e.message);
+    }
+    done++;
+    progressBar(Math.round((done / total) * 100));
+  }
+
+  await loadSpeakers();
+  toast(`Store-copy done on ${synced} speaker(s) — click each target's "Push 1-6" button to write to hardware`, 'success');
+  progressDone(1500);
 }
 
 // ---- System ----

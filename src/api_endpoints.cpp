@@ -522,6 +522,111 @@ void handleDeletePreset(AsyncWebServerRequest* req) {
 }
 
 // -----------------------------------------------------------------------------
+// GET /api/speaker/{id}/presets/export-set
+//   Komplettes 6-Slot-Preset-Set eines Speakers als JSON-File.
+//   Schema kompatibel zum Import-Endpunkt (siehe handleImportPresetsSet).
+// -----------------------------------------------------------------------------
+void handleExportPresetsSet(AsyncWebServerRequest* req) {
+    String id = req->pathArg(0);
+    auto slots = sixback::PresetStore::instance().getForSpeaker(id);
+
+    JsonDocument doc;
+    doc["sixback_preset_set"] = 1;
+    doc["exported_from"]      = id;
+    String spName;
+    {
+        sixback::SpeakerInventory::LockGuard g(sixback::SpeakerInventory::instance());
+        auto* sp = sixback::SpeakerInventory::instance().findById(id);
+        if (sp) spName = sp->name;
+    }
+    doc["exported_speaker_name"] = spName;
+    JsonArray arr = doc["presets"].to<JsonArray>();
+    for (int i = 0; i < 6; ++i) {
+        const sixback::Preset& p = (i < (int)slots.size()) ? slots[i] : sixback::Preset();
+        JsonObject pj = arr.add<JsonObject>();
+        pj["slot"]      = i + 1;
+        pj["source"]    = sixback::presetSourceToStr(p.source);
+        pj["name"]      = p.name;
+        pj["stationId"] = p.stationId;
+        pj["streamUrl"] = p.streamUrl;
+        pj["imageUrl"]  = p.imageUrl;
+        if (p.source == sixback::PresetSource::OPAQUE) {
+            pj["rawContentItem"]   = p.rawContentItem;
+            pj["opaqueSourceName"] = p.opaqueSourceName;
+        }
+    }
+    String body; serializeJson(doc, body);
+
+    String fname = "presets-" + id + ".json";
+    if (spName.length() > 0) {
+        String safe;
+        for (size_t i = 0; i < spName.length() && safe.length() < 32; ++i) {
+            char c = spName[i];
+            safe += (isalnum((unsigned char)c) || c == '-' || c == '_') ? c : '-';
+        }
+        if (safe.length() > 0) fname = safe + "-presets.json";
+    }
+    auto* resp = req->beginResponse(200, "application/json", body);
+    resp->addHeader("Content-Disposition", "attachment; filename=\"" + fname + "\"");
+    req->send(resp);
+}
+
+// -----------------------------------------------------------------------------
+// POST /api/speaker/{id}/presets/import-set
+//   Ersetzt das komplette 6-Slot-Set des Speakers durch das uebergebene JSON.
+//   Akzeptiert sowohl das Export-Set-Schema (sixback_preset_set:1 mit
+//   presets[]) als auch direkt ein presets[]-Array. Slots ohne Eintrag im
+//   JSON werden gelöscht (=EMPTY). Push zur Hardware passiert NICHT
+//   automatisch — User klickt danach den per-Slot- oder Push-All-Button.
+// -----------------------------------------------------------------------------
+void handleImportPresetsSet(AsyncWebServerRequest* req, JsonDocument& body) {
+    String id = req->pathArg(0);
+    auto& inv = sixback::SpeakerInventory::instance();
+    {
+        sixback::SpeakerInventory::LockGuard g(inv);
+        if (!inv.findById(id)) {
+            req->send(404, "application/json", "{\"error\":\"unknown deviceId\"}");
+            return;
+        }
+    }
+
+    JsonArray arr;
+    if (body["presets"].is<JsonArray>())       arr = body["presets"].as<JsonArray>();
+    else if (body.as<JsonArray>().size() > 0)  arr = body.as<JsonArray>();
+    else {
+        req->send(400, "application/json",
+                  "{\"error\":\"expected {presets:[...]} or [...]\"}");
+        return;
+    }
+
+    std::vector<sixback::Preset> slots(6);
+    for (int i = 0; i < 6; ++i) {
+        slots[i].slot   = i + 1;
+        slots[i].source = sixback::PresetSource::EMPTY;
+    }
+    int n = 0;
+    for (JsonObject pj : arr) {
+        uint8_t slot = pj["slot"].as<uint8_t>();
+        if (slot < 1 || slot > 6) continue;
+        sixback::Preset& p = slots[slot - 1];
+        p.slot      = slot;
+        p.source    = sixback::presetSourceFromStr(String((const char*)(pj["source"] | "EMPTY")));
+        p.name      = (const char*)(pj["name"]      | "");
+        p.stationId = (const char*)(pj["stationId"] | "");
+        p.streamUrl = (const char*)(pj["streamUrl"] | "");
+        p.imageUrl  = (const char*)(pj["imageUrl"]  | "");
+        p.rawContentItem   = (const char*)(pj["rawContentItem"]   | "");
+        p.opaqueSourceName = (const char*)(pj["opaqueSourceName"] | "");
+        if (p.source != sixback::PresetSource::EMPTY) ++n;
+    }
+    bool ok = sixback::PresetStore::instance().setSlots(id, slots);
+
+    JsonDocument resp; resp["ok"] = ok; resp["imported"] = n;
+    String b; serializeJson(resp, b);
+    req->send(ok ? 200 : 500, "application/json", b);
+}
+
+// -----------------------------------------------------------------------------
 // POST /api/speaker/{id}/presets/import-from-device
 //   Liest /presets-XML vom echten Speaker (BMX-API Port 8090) und uebernimmt
 //   die bereits dort gespeicherten Presets in den ESP-PresetStore. So muss
@@ -548,6 +653,106 @@ String xmlExtractTag(const String& xml, int start, int end, const String& tag) {
     int b = xml.indexOf(close, a);
     if (b < 0 || b > end) return "";
     return xml.substring(a, b);
+}
+
+// -----------------------------------------------------------------------------
+// POST /api/speaker/{id}/preset/{n}/revert
+//   Setzt EINEN Store-Slot zurueck auf den aktuellen Hardware-Stand des
+//   Speakers. Genutzt vom UI als "✕ undo" auf einer noch nicht gepushten
+//   (unsaved) Slot-Karte: der User hat eine Aenderung vorbereitet, will
+//   sie aber doch nicht — Klick auf ✕ macht den Store wieder synchron
+//   ohne dass die Hardware angefasst wird.
+//
+//   Verfahren: /presets-XML vom Speaker holen, Slot N extrahieren,
+//   normalisieren (inkl. OPAQUE rawContentItem), Store-Slot ersetzen.
+//   Wenn der Speaker den Slot leer hat → Store-Slot loeschen.
+// -----------------------------------------------------------------------------
+void handleRevertPresetToHw(AsyncWebServerRequest* req) {
+    String id = req->pathArg(0);
+    uint8_t slot = req->pathArg(1).toInt();
+    if (slot < 1 || slot > 6) {
+        req->send(400, "application/json", "{\"error\":\"slot 1..6\"}");
+        return;
+    }
+    auto& inv = sixback::SpeakerInventory::instance();
+    String spIp;
+    {
+        sixback::SpeakerInventory::LockGuard g(inv);
+        auto* sp = inv.findById(id);
+        if (!sp) { req->send(404, "application/json", "{\"error\":\"unknown deviceId\"}"); return; }
+        spIp = sp->ip;
+    }
+
+    HTTPClient http;
+    http.setReuse(false);
+    http.setConnectTimeout(2000); http.setTimeout(3000);
+    String url = "http://" + spIp + ":" + String(BOSE_BMX_PORT) + "/presets";
+    if (!http.begin(url)) {
+        req->send(500, "application/json", "{\"error\":\"http begin failed\"}");
+        return;
+    }
+    int code = http.GET();
+    if (code != 200) {
+        http.end();
+        JsonDocument doc; doc["error"] = "speaker /presets http"; doc["http"] = code;
+        String b; serializeJson(doc, b);
+        req->send(502, "application/json", b);
+        return;
+    }
+    String xml = http.getString();
+    http.end();
+
+    String openTag = "<preset id=\"" + String(slot) + "\"";
+    int presetOpen = xml.indexOf(openTag);
+    if (presetOpen < 0) {
+        sixback::PresetStore::instance().clear(id, slot);
+        JsonDocument doc; doc["ok"] = true; doc["action"] = "cleared"; doc["slot"] = slot;
+        String b; serializeJson(doc, b);
+        req->send(200, "application/json", b);
+        return;
+    }
+    int idStart = presetOpen + openTag.length();
+    int presetClose = xml.indexOf("</preset>", idStart);
+    if (presetClose < 0) {
+        req->send(502, "application/json", "{\"error\":\"malformed /presets xml\"}");
+        return;
+    }
+
+    String src  = xmlExtractAttr(xml, idStart, presetClose, "source");
+    String loc  = xmlExtractAttr(xml, idStart, presetClose, "location");
+    String name = xmlExtractTag (xml, idStart, presetClose, "itemName");
+    String img  = xmlExtractTag (xml, idStart, presetClose, "containerArt");
+
+    sixback::Preset p;
+    p.slot = slot;
+    auto nr = sixback::normalizePreset(src, loc, name, img, p);
+
+    if (nr.status == sixback::NormalizeStatus::OK_OPAQUE) {
+        int ciOpen  = xml.indexOf("<ContentItem", idStart);
+        int ciClose = xml.indexOf("</ContentItem>", ciOpen);
+        if (ciOpen >= 0 && ciOpen < presetClose && ciClose > ciOpen) {
+            p.rawContentItem = xml.substring(ciOpen, ciClose + 14);
+        }
+        if (p.name.length() == 0) p.name = String("[") + src + String("] preset");
+    }
+    if (nr.status == sixback::NormalizeStatus::ABANDONED) {
+        sixback::PresetStore::instance().clear(id, slot);
+        JsonDocument doc; doc["ok"] = true; doc["action"] = "cleared"; doc["slot"] = slot;
+        doc["note"] = "speaker source not representable in store";
+        String b; serializeJson(doc, b);
+        req->send(200, "application/json", b);
+        return;
+    }
+
+    bool ok = sixback::PresetStore::instance().set(id, p);
+    JsonDocument doc;
+    doc["ok"]     = ok;
+    doc["action"] = "reverted";
+    doc["slot"]   = slot;
+    doc["source"] = sixback::presetSourceToStr(p.source);
+    doc["name"]   = p.name;
+    String b; serializeJson(doc, b);
+    req->send(ok ? 200 : 500, "application/json", b);
 }
 
 // Pure-Helper: holt /presets-XML vom Speaker, normalisiert + persistiert.
@@ -1828,8 +2033,14 @@ void registerApiEndpoints(AsyncWebServer& ui) {
     ui.on("^/api/speaker/([^/]+)/preset/([1-6])/export$", HTTP_GET, handleExportPreset);
     ui.on("^/api/speaker/([^/]+)/preset/([1-6])/push-to-device$",
           HTTP_POST, handlePushPresetToDevice);
+    ui.on("^/api/speaker/([^/]+)/preset/([1-6])/revert$",
+          HTTP_POST, handleRevertPresetToHw);
     ui.on("^/api/speaker/([^/]+)/presets/import-from-device$",
           HTTP_POST, handleImportFromDevice);
+    ui.on("^/api/speaker/([^/]+)/presets/export-set$",
+          HTTP_GET, handleExportPresetsSet);
+    routeJsonBody(ui, "^/api/speaker/([^/]+)/presets/import-set$",
+                  HTTP_POST, handleImportPresetsSet);
     routeJsonBody(ui, "/api/preset/swap", HTTP_POST, handleSwapPresets);
     ui.on("^/api/speaker/([^/]+)/push-all$", HTTP_POST, handleBulkPushPresets);
     ui.on("^/api/speaker/([^/]+)/key/([A-Z_0-9]+)$", HTTP_POST, handleSpeakerKey);
