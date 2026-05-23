@@ -147,8 +147,21 @@ def main():
     # handleRoot serves index.html.gz first if present.
     import gzip as _gzip
     data_dir = os.path.join(PROJECT_DIR, "data")
-    src_html = os.path.join(data_dir, "index.html")
+    # v0.7.4: HTML-Source lives in web-src/ (outside data/) so the uncompressed
+    # 140 KB file does not get packed into the LittleFS image; the runtime
+    # handler serves index.html.gz exclusively. Migration safety: if an older
+    # checkout still has data/index.html, move it to web-src/.
+    src_html = os.path.join(PROJECT_DIR, "web-src", "index.html")
+    legacy_html = os.path.join(data_dir, "index.html")
     gz_html  = os.path.join(data_dir, "index.html.gz")
+    if os.path.isfile(legacy_html):
+        if not os.path.isfile(src_html):
+            os.makedirs(os.path.dirname(src_html), exist_ok=True)
+            os.replace(legacy_html, src_html)
+            print(f"[migrate] moved legacy data/index.html -> web-src/index.html")
+        else:
+            os.remove(legacy_html)
+            print(f"[migrate] removed stale data/index.html (web-src/ is source)")
     if os.path.isfile(src_html):
         src_mtime = os.path.getmtime(src_html)
         if (not os.path.isfile(gz_html) or
