@@ -18,6 +18,15 @@
   h2 { color: var(--accent); margin-top: 1.5em; font-size: 1.15em; }
   .subline { color: var(--mute); margin-top: 0; font-size: .9em; }
   .subline a { color: var(--accent); }
+  .dnd-banner { background: #f4f8ff; border: 1px solid #c8d8f0; border-radius: 6px;
+                padding: .55em .8em; margin: .6em 0 .9em 0; font-size: .88em;
+                color: #1a3a6b; line-height: 1.45; }
+  .dnd-banner b { color: #0a2148; }
+  .dnd-banner code { background: #e3ecf8; padding: 0 .25em; border-radius: 3px; font-size: .9em; }
+  .dnd-banner .dnd-close { float: right; background: transparent; border: 0; cursor: pointer;
+                color: #1a3a6b; font-size: 1.1em; line-height: 1; padding: 0 .2em;
+                margin: -.2em -.3em 0 .3em; }
+  .dnd-banner .dnd-close:hover { color: #0a2148; }
   .topbar { display: flex; align-items: baseline; gap: 1em; flex-wrap: wrap; }
   .topbar .meta { color: var(--mute); font-size: .85em; font-family: ui-monospace, Menlo, monospace; }
 
@@ -273,6 +282,7 @@
                         border-radius: 6px; background: #fff; }
   .sb-controls button { padding: .35em .7em; font-size: .85em; }
   .sb-hint { color: var(--mute); font-size: .78em; line-height: 1.3; }
+  .sb-hint .dnd-strong { color: var(--ink); font-weight: 800; font-size: 1.05em; }
   .sb-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
              gap: .45em; overflow-y: auto; padding-right: .25em;
              align-content: start; flex: 1; min-height: 0; }
@@ -376,7 +386,7 @@
         <input type="text" id="lib-q" placeholder="Search TuneIn (SWR3, BBC, jazz…)" oninput="onLibrarySearchInput()">
         <button onclick="loadLibrary()" title="Refresh">↻</button>
       </div>
-      <div class="sb-hint">Drag onto a preset slot to save. Click to preview on a speaker.</div>
+      <div class="sb-hint"><span class="dnd-strong">↦ Drag a tile onto a preset slot</span> to save it there. Click to preview on a speaker.</div>
       <div class="sb-grid" id="lib-grid">
         <div class="sb-empty">Type ≥2 characters to search.</div>
       </div>
@@ -391,7 +401,7 @@
         <button class="primary" onclick="streamAddTile()" id="stream-add-btn">+ Add &amp; validate</button>
       </div>
       <div class="sb-stream-meta" id="stream-meta"></div>
-      <div class="sb-hint">Validated streams appear below — drag onto a slot.<br>
+      <div class="sb-hint"><span class="dnd-strong">↦ Drag a validated tile onto a preset slot</span> to save it there.<br>
         Validator probes the URL (HEAD/ICY) on the proxy; bad URLs are flagged.</div>
       <div class="sb-grid" id="stream-grid">
         <div class="sb-empty">No custom streams yet. Add one above.</div>
@@ -419,6 +429,16 @@
 </div>
 <p class="subline">Bring your Six back — local SoundTouch cloud replacement. Discover speakers on the LAN, migrate them, manage presets — all from this page.</p>
 
+<div class="dnd-banner" id="dnd-banner">
+  <button class="dnd-close" onclick="dismissDndBanner()" title="Hide this hint (sticky)">✕</button>
+  <b>This UI is operated by Drag &amp; Drop.</b><br>
+  Open <b>◧ Media</b> on the left to browse <b>📻 Radio</b> / <b>🔗 Stream</b>.
+  <b>Drag a tile</b> onto a preset slot to assign it; <b>drag a slot</b> onto another slot
+  to swap (same speaker) or copy (across speakers). Changes stay in the store as
+  <code>✏ unsaved</code> until you press <b>push slot N →</b> or <b>📤 Push 1–6</b>;
+  press <code>✕</code> on an unsaved slot to discard and revert to the speaker state.
+</div>
+
 <div class="automode-bar" id="automode-bar">
   <span class="label">Auto-Migrate at Boot:</span>
   <label class="switch" title="Toggles auto-migration on next ESP reboot">
@@ -431,7 +451,7 @@
 
 <div class="toolbar">
   <button class="primary" onclick="discover()">↻ Discover speakers (LAN scan)</button>
-  <button onclick="refreshStatuses()">🔄 Refresh status</button>
+  <button onclick="refreshStatuses()" title="Re-probe all speakers (status + /presets) AND discard any unsaved store-side changes by reverting to what the speaker actually has">🔄 Refresh status</button>
   <button onclick="openAddModal()">+ Add speaker manually</button>
   <button onclick="openGroupSyncModal()">⇄ Sync presets to group</button>
   <button class="danger" onclick="rebootEsp()">⟲ Reboot ESP</button>
@@ -1148,7 +1168,7 @@ function actionButtonsHtml(s) {
             + `<button class="vol" title="Volume up (1 step)"   onclick="sendKey('${s.device_id}','VOLUME_UP')">Vol +</button>`;
   return power + vol + migrate +
     `<button onclick="actSpeaker('${s.device_id}','reboot')">⟲ Reboot</button>` +
-    `<button onclick="actSpeaker('${s.device_id}','refresh')">🔄 Status</button>` +
+    `<button title="Re-probe this speaker's status + hardware presets AND discard any unsaved store-side changes" onclick="actSpeaker('${s.device_id}','refresh')">🔄 Status</button>` +
     `<button title="Download all 6 store-side preset slots of this speaker as a JSON file" onclick="exportPresetsSet('${s.device_id}')">⬇ Export</button>` +
     `<button title="Upload a previously exported preset-set JSON for this speaker (replaces store; push to hardware afterwards)" onclick="importPresetsSet('${s.device_id}')">⬆ Import</button>` +
     `<button title="Download diagnostic snapshot — BMX endpoints + Telnet config — to send us for unsupported-source debugging" onclick="downloadSnapshot('${s.device_id}')">📋 Snapshot</button>` +
@@ -2379,17 +2399,18 @@ async function actSpeaker(devId, action) {
   try {
     let r;
     if (action === 'refresh') {
-      // Per-speaker refresh: pull both metadata (status, cloud_url, …) AND
-      // hardware presets, so the user sees what's actually on the box. Wrapped
-      // in a progress modal so user cannot fire other ops in parallel.
+      // Per-speaker refresh: status + hardware-presets pull + DISCARD any
+      // unsaved store changes (resync store := hw). Wrapped in a progress
+      // modal so user cannot fire other ops in parallel.
       const spName = (STATE.speakers.find(s => s.device_id === devId)?.name || devId);
       progressShow(`Refreshing ${spName}`, [
-        {id:'status', label:'Speaker status (Telnet probe + IP+cloud)'},
-        {id:'hwget',  label:'Read hardware-presets from /presets'},
-        {id:'render', label:'Update local view'},
+        {id:'status',  label:'Speaker status (Telnet probe + IP+cloud)'},
+        {id:'hwget',   label:'Read hardware-presets from /presets'},
+        {id:'discard', label:'Discard unsaved store changes (revert to speaker)'},
+        {id:'render',  label:'Update local view'},
       ]);
       progressStep('status', 'running');
-      progressBar(15);
+      progressBar(10);
       try {
         const sr = await api('/api/speakers/refresh-status', {method:'POST'});
         STATE.speakers = sr.speakers || STATE.speakers;
@@ -2397,22 +2418,57 @@ async function actSpeaker(devId, action) {
         const me = STATE.speakers.find(s => s.device_id === devId);
         progressStep('status', 'done', me ? me.status : '');
       } catch (e) { progressStep('status', 'error', e.message); progressDone(); return; }
-      progressBar(50);
+      progressBar(35);
       progressStep('hwget', 'running');
+      let hwOk = false;
       try {
         const hwR = await api('/api/speaker/'+encodeURIComponent(devId)+'/hardware-presets');
         const hwSlots = normalizeHwSlots_(hwR.slots || [], hwR.ok);
         const d = STATE.presetsByDev[devId] = STATE.presetsByDev[devId] || {store: normalizeStoreSlots_([]), hw: hwSlots};
         d.hw = hwSlots;
         d.hwReachable = hwR.ok !== false;
+        hwOk = !!hwR.ok;
         const populated = hwSlots.filter(s => !isSlotEmpty_(s)).length;
-        progressStep('hwget', hwR.ok ? 'done' : 'error', hwR.ok ? `${populated} of 6 slots populated` : 'speaker /presets unreachable');
+        progressStep('hwget', hwOk ? 'done' : 'error',
+                     hwOk ? `${populated} of 6 slots populated` : 'speaker /presets unreachable');
       } catch (e) { progressStep('hwget', 'error', e.message); }
-      progressBar(80);
+      progressBar(55);
+      // Discard phase
+      let discardedCount = 0;
+      if (!hwOk) {
+        progressStep('discard', 'skip', 'speaker unreachable');
+      } else {
+        const d = STATE.presetsByDev[devId];
+        const dirtySlots = [];
+        if (d) for (let i = 0; i < 6; i++) {
+          if (!slotsMatch_(d.store[i] || {source:'EMPTY'}, d.hw[i] || {source:''})) dirtySlots.push(i+1);
+        }
+        if (dirtySlots.length === 0) {
+          progressStep('discard', 'skip', 'all in sync');
+        } else {
+          progressStep('discard', 'running', `${dirtySlots.length} slot(s)`);
+          for (const slot of dirtySlots) {
+            try {
+              const r = await api(`/api/speaker/${encodeURIComponent(devId)}/preset/${slot}/revert`, {method:'POST'});
+              if (r && r.ok) discardedCount++;
+            } catch(_) {}
+          }
+          try { await loadPresetsFor(devId); } catch(_) {}
+          STATE.dirtySpeakers.delete(devId);
+          updatePushVisibility(devId);
+          progressStep('discard',
+                       discardedCount === dirtySlots.length ? 'done' : 'error',
+                       `${discardedCount}/${dirtySlots.length} reverted`);
+        }
+      }
+      progressBar(85);
       progressStep('render', 'running');
       renderSpeakerSlots(devId);
       applyPlayingHighlight(devId);
       progressStep('render', 'done');
+      if (discardedCount > 0) {
+        toast(`${spName}: discarded ${discardedCount} unsaved slot change(s)`, 'success');
+      }
       progressDone(800);
       return;
     } else {
@@ -2696,10 +2752,13 @@ async function pollUntilScanDone() {
   toast('Scan still running — UI will refresh on next /api/status tick', 'error');
 }
 
-// Global "🔄 Refresh status" toolbar button. Pulls inventory-side status for
-// all speakers (Telnet+IP+cloud probe) AND re-fetches /presets from each one
-// so the dual-row "on speaker" view reflects reality. Wrapped in a progress
-// modal so user sees per-speaker steps + cannot fire other ops in parallel.
+// Global "🔄 Refresh status" toolbar button. Three phases per modal:
+//   1. Inventory probe (Telnet/IP/cloud) — once for all speakers
+//   2. Per-speaker /hardware-presets pull — refreshes "on speaker" row
+//   3. Per-speaker DISCARD: for each slot where store != hw, fire the
+//      per-slot /revert endpoint. This wipes any unsaved store-side
+//      changes that the user staged via drag-drop but never pushed.
+//      Persistent (NVS-saved), so it survives reboot.
 async function refreshStatuses() {
   const speakers = (STATE.speakers || []).slice();
   if (speakers.length === 0) {
@@ -2709,11 +2768,13 @@ async function refreshStatuses() {
   progressShow(`Refresh status (${speakers.length} speaker${speakers.length===1?'':'s'})`);
   progressAddStep('inv', `Inventory probe (Telnet/cloud) — all ${speakers.length}`);
   for (const s of speakers) {
-    progressAddStep('hw-' + s.device_id, `Read hardware presets — ${s.name || s.device_id}`);
+    const nm = s.name || s.device_id;
+    progressAddStep('hw-' + s.device_id, `Read hardware presets — ${nm}`);
+    progressAddStep('discard-' + s.device_id, `Discard unsaved store changes — ${nm}`);
   }
-  progressBar(2);
+  progressBar(1);
 
-  // Step 1: bulk inventory refresh.
+  // Phase 1: bulk inventory refresh.
   progressStep('inv', 'running');
   try {
     const sr = await api('/api/speakers/refresh-status', {method: 'POST'});
@@ -2725,15 +2786,17 @@ async function refreshStatuses() {
     progressDone(0);
     return;
   }
-  progressBar(Math.round(100 / (speakers.length + 1)));
-
-  // Step 2: per-speaker hardware-presets — sequentially, so each step lights
-  // up in the UI individually instead of all going green at once.
+  const totalSteps = 1 + speakers.length * 2;
   let done = 1;
-  const total = speakers.length + 1;
+  progressBar(Math.round((done / totalSteps) * 100));
+
+  // Phase 2 + 3: per-speaker.
+  let totalDiscarded = 0;
   for (const s of speakers) {
     const sid = s.device_id;
+    // Phase 2: HW pull
     progressStep('hw-' + sid, 'running');
+    let hwOk = false;
     try {
       const hwR = await api(`/api/speaker/${encodeURIComponent(sid)}/hardware-presets`);
       const hwSlots = normalizeHwSlots_(hwR.slots || [], hwR.ok);
@@ -2741,19 +2804,67 @@ async function refreshStatuses() {
                 { store: normalizeStoreSlots_([]), hw: hwSlots };
       d.hw = hwSlots;
       d.hwReachable = hwR.ok !== false;
+      hwOk = !!hwR.ok;
       renderSpeakerSlots(sid);
       applyPlayingHighlight(sid);
-      updatePushVisibility(sid);
       const populated = hwSlots.filter(x => !isSlotEmpty_(x)).length;
-      progressStep('hw-' + sid, hwR.ok ? 'done' : 'error',
-                   hwR.ok ? `${populated}/6 populated` : 'unreachable');
+      progressStep('hw-' + sid, hwOk ? 'done' : 'error',
+                   hwOk ? `${populated}/6 populated` : 'unreachable');
     } catch (e) {
       progressStep('hw-' + sid, 'error', e.message);
     }
     done++;
-    progressBar(Math.round((done / total) * 100));
+    progressBar(Math.round((done / totalSteps) * 100));
+
+    // Phase 3: discard unsaved store entries by reverting per slot.
+    if (!hwOk) {
+      progressStep('discard-' + sid, 'skip', 'speaker unreachable');
+      done++;
+      progressBar(Math.round((done / totalSteps) * 100));
+      continue;
+    }
+    const d = STATE.presetsByDev[sid];
+    if (!d) {
+      progressStep('discard-' + sid, 'skip', 'no store snapshot');
+      done++;
+      progressBar(Math.round((done / totalSteps) * 100));
+      continue;
+    }
+    const dirtySlots = [];
+    for (let i = 0; i < 6; i++) {
+      const st = d.store[i] || {source: 'EMPTY'};
+      const hw = d.hw[i]    || {source: ''};
+      if (!slotsMatch_(st, hw)) dirtySlots.push(i + 1);
+    }
+    if (dirtySlots.length === 0) {
+      progressStep('discard-' + sid, 'skip', 'all in sync');
+      done++;
+      progressBar(Math.round((done / totalSteps) * 100));
+      continue;
+    }
+    progressStep('discard-' + sid, 'running', `${dirtySlots.length} slot(s)`);
+    let okCount = 0;
+    for (const slot of dirtySlots) {
+      try {
+        const r = await api(`/api/speaker/${encodeURIComponent(sid)}/preset/${slot}/revert`, {method: 'POST'});
+        if (r && r.ok) okCount++;
+      } catch (_) { /* swallow, keep going */ }
+    }
+    totalDiscarded += okCount;
+    try { await loadPresetsFor(sid); } catch (_) {}
+    STATE.dirtySpeakers.delete(sid);
+    updatePushVisibility(sid);
+    progressStep('discard-' + sid,
+                 okCount === dirtySlots.length ? 'done' : 'error',
+                 `${okCount}/${dirtySlots.length} reverted`);
+    done++;
+    progressBar(Math.round((done / totalSteps) * 100));
   }
-  progressDone(1200);
+
+  if (totalDiscarded > 0) {
+    toast(`Refresh done — discarded ${totalDiscarded} unsaved slot change(s)`, 'success');
+  }
+  progressDone(1500);
 }
 
 // ---- Add modal ----
@@ -2965,6 +3076,13 @@ async function factoryResetWifi() {
   catch(e) { toast(e.message, 'error'); }
 }
 
+// ---- D&D hint banner ----
+function dismissDndBanner() {
+  const b = document.getElementById('dnd-banner');
+  if (b) b.style.display = 'none';
+  try { localStorage.setItem('SIXBACK_DND_HINT_DISMISSED', '1'); } catch(_) {}
+}
+
 // ---- Modal helpers ----
 function openModal(id) { document.getElementById(id).classList.add('open'); }
 function closeModal(id) { document.getElementById(id).classList.remove('open'); }
@@ -3046,6 +3164,14 @@ try {
   }
 } catch(e){}
 streamLoadFromLocalStorage();
+// D&D-Hinweis-Banner: persistent dismiss via localStorage. Wer ihn weggeklickt
+// hat, sieht ihn nicht wieder (es sei denn, localStorage wird geleert).
+try {
+  if (localStorage.getItem('SIXBACK_DND_HINT_DISMISSED') === '1') {
+    const b = document.getElementById('dnd-banner');
+    if (b) b.style.display = 'none';
+  }
+} catch(_) {}
 // Radio tab needs an explicit query (TuneIn-only); leave grid showing
 // "Type ≥2 characters" until the user types.
 loadStatus();
