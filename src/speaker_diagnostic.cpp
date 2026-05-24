@@ -100,7 +100,7 @@ void rotateSnapshots_(const String& deviceId) {
     if (LittleFS.exists(p0)) LittleFS.rename(p0, p1);
 }
 
-// Push Snapshot zum Maintainer-Receiver — install.busware.de/bosefix/snapshot
+// Push Snapshot zum Maintainer-Receiver — install.busware.de/sixback/snapshot
 // (Apache-Reverse-Proxy via WireGuard zu 10.10.11.113:8788).
 // Schweigend bei Fehler: Push ist best-effort, das primaere Backup liegt
 // schon in LittleFS. Setzt User-Agent damit der Receiver weiss dass es
@@ -146,8 +146,8 @@ bool captureLiveSnapshot(const String& deviceId, JsonDocument& out) {
     }
     if (ip.length() == 0) return false;
 
-    out["bosefix_version"]  = FW_VERSION_STRING;
-    out["bosefix_build"]    = FW_BUILD_DATE;
+    out["sixback_version"]  = FW_VERSION_STRING;
+    out["sixback_build"]    = FW_BUILD_DATE;
     out["captured_at_ms"]   = (uint32_t)millis();
     out["esp_base_url"]     = "http://" + WiFi.localIP().toString() + ":" + String(BOSE_HTTP_PORT);
 
@@ -225,7 +225,7 @@ void persistPreMigrateSnapshot(const String& deviceId, bool force) {
 
     // Auto-Upload zum Maintainer-Receiver — best-effort. Schutz gegen den
     // Fall "User reflasht ESP, LittleFS leer, Original-Presets weg".
-    // install.busware.de/bosefix/snapshot via Apache-Proxy zu Pi5:8788.
+    // install.busware.de/sixback/snapshot via Apache-Proxy zu Pi5:8788.
     uploadSnapshotToMaintainer_(jsonBody);
 }
 

@@ -25,6 +25,7 @@
 #include "bose_endpoints.h"
 #include "event_store.h"
 #include "speaker_diagnostic.h"
+#include "spotify_player.h"
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <WiFi.h>
@@ -182,6 +183,15 @@ void emitSpeakers(AsyncWebServerRequest* req, JsonDocument& doc) {
             if (p.source != sixback::PresetSource::EMPTY) ++n;
         }
         o["preset_count"] = n;
+        // Spotify-Accounts (READY) — Stufe 0 Diagnose, leerer Array wenn kein Link.
+        if (!s.spotifyAccounts.empty()) {
+            JsonArray spa = o["spotify_accounts"].to<JsonArray>();
+            for (const auto& sa : s.spotifyAccounts) {
+                JsonObject sp = spa.add<JsonObject>();
+                sp["source_account"] = sa.sourceAccount;
+                sp["display_name"]   = sa.displayName;
+            }
+        }
     }
     doc["scan_in_progress"] = inv.isScanRunning();
     String body; serializeJson(doc, body);
@@ -370,6 +380,7 @@ void handleMigrate(AsyncWebServerRequest* req) {
     // Ohne diese sieht der Speaker STORED_MUSIC-Presets als
     // UNKNOWN_SOURCE_ERROR (1005) nach Migration zu SixBack.
     sixback::SpeakerInventory::instance().refreshMediaServers(id);
+    sixback::SpeakerInventory::instance().refreshSpotifyAccounts(id);
 
     auto* job = new MigrateJob_{id, ip, myBaseUrl(), /*doMigrate=*/true};
     BaseType_t r = xTaskCreate(migrateRevertWorker_, "bg-migrate", 4096, job,
@@ -401,7 +412,15 @@ void handleReboot(AsyncWebServerRequest* req) {
 }
 
 void handleRefreshStatus(AsyncWebServerRequest* req) {
-    sixback::SpeakerInventory::instance().refreshMigrationStatus();
+    auto& inv = sixback::SpeakerInventory::instance();
+    inv.refreshMigrationStatus();
+    // Stufe-0 Diagnose: bei jedem manuellen Status-Refresh auch die
+    // Spotify-Account-Verknuepfung pro Speaker neu pullen (leichter
+    // BMX /sources-GET, ~3s pro Speaker max). So bekommt der User
+    // im UI per "🔄 Status"-Click eine aktuelle Spotify-Anzeige.
+    for (const auto& s : inv.list()) {
+        inv.refreshSpotifyAccounts(s.deviceId);
+    }
     JsonDocument doc;
     emitSpeakers(req, doc);
 }
@@ -2013,6 +2032,183 @@ void handleDiagnosticSnapshotMeta(AsyncWebServerRequest* req) {
     req->send(200, "application/json", body);
 }
 
+// -----------------------------------------------------------------------------
+// Spotify slot-mapping API (S3-only, siehe SIXBACK_SPOTIFY_ENABLED in
+// platformio.ini)
+// -----------------------------------------------------------------------------
+#ifdef SIXBACK_SPOTIFY_ENABLED
+
+// GET /api/spotify/slots  — alle aktuellen Mappings
+void handleSpotifySlotsList(AsyncWebServerRequest* req) {
+    JsonDocument doc;
+    JsonArray arr = doc["slots"].to<JsonArray>();
+    for (const auto& m : sixback::spotify::listSlots()) {
+        JsonObject o = arr.add<JsonObject>();
+        o["device_id"]    = m.deviceId;
+        o["slot"]         = m.slot;
+        o["spotify_uri"]  = m.spotifyUri;
+        o["display_name"] = m.displayName;
+    }
+    String body; serializeJson(doc, body);
+    req->send(200, "application/json", body);
+}
+
+// PUT /api/spotify/slot/{deviceId}/{slot}  Body: {"uri":"spotify:...","name":"..."}
+// Empty uri -> Mapping loeschen.
+void handleSpotifySlotPut(AsyncWebServerRequest* req, JsonDocument& body) {
+    String deviceId = req->pathArg(0);
+    int slot = req->pathArg(1).toInt();
+    if (slot < 1 || slot > 6) {
+        req->send(400, "application/json", "{\"error\":\"slot 1..6\"}");
+        return;
+    }
+    String uri  = (const char*)(body["uri"]  | "");
+    String name = (const char*)(body["name"] | "");
+    if (uri.length() > 0 && !uri.startsWith("spotify:")) {
+        req->send(400, "application/json",
+                  "{\"error\":\"uri must start with spotify:\"}");
+        return;
+    }
+    sixback::spotify::setSlot(deviceId, slot, uri, name);
+    req->send(200, "application/json", "{\"ok\":true}");
+}
+
+// PUT /api/spotify/auth  Body: {clientId, clientSecret, refreshToken, [accessToken], [expiresInSec]}
+// Phase-A/B-stop-gap: User holt manuell einen Token via curl-Setup und stopft
+// ihn hier rein. Phase-B-OAuth-Flow wird das ersetzen.
+void handleSpotifyAuthPut(AsyncWebServerRequest* req, JsonDocument& body) {
+    sixback::spotify::AuthState s;
+    s.clientId     = (const char*)(body["clientId"]     | "");
+    s.clientSecret = (const char*)(body["clientSecret"] | "");
+    s.refreshToken = (const char*)(body["refreshToken"] | "");
+    s.accessToken  = (const char*)(body["accessToken"]  | "");
+    int expiresIn  = body["expiresInSec"] | 3600;
+    s.expiresAtMs  = (uint64_t)millis() + (uint64_t)expiresIn * 1000;
+    s.spotifyUserId      = (const char*)(body["spotifyUserId"]      | "");
+    s.spotifyDisplayName = (const char*)(body["spotifyDisplayName"] | "");
+    if (s.clientId.length() == 0 || s.clientSecret.length() == 0
+        || s.refreshToken.length() == 0) {
+        req->send(400, "application/json",
+                  "{\"error\":\"clientId+clientSecret+refreshToken required\"}");
+        return;
+    }
+    sixback::spotify::setAuth(s);
+    req->send(200, "application/json", "{\"ok\":true}");
+}
+
+// GET /api/spotify/auth — Status ohne Secrets.
+void handleSpotifyAuthGet(AsyncWebServerRequest* req) {
+    auto s = sixback::spotify::getAuth();
+    JsonDocument doc;
+    doc["configured"]      = sixback::spotify::isAuthConfigured();
+    doc["client_id"]       = s.clientId;          // public part nur
+    doc["user_id"]         = s.spotifyUserId;
+    doc["display_name"]    = s.spotifyDisplayName;
+    int64_t rem = (int64_t)s.expiresAtMs - (int64_t)millis();
+    doc["expires_in_sec"]  = rem / 1000;
+    doc["has_access_token"]= s.accessToken.length() > 0;
+    doc["has_refresh_token"]= s.refreshToken.length() > 0;
+    String body; serializeJson(doc, body);
+    req->send(200, "application/json", body);
+}
+
+// GET /api/spotify/auth/url?client_id=X&redirect_uri=Y
+// Liefert die Spotify-OAuth-URL fuer den Browser-Auth-Flow.
+// redirect_uri default: http://127.0.0.1:8888/callback (User kopiert URL aus
+// 404-Page).
+void handleSpotifyAuthUrl(AsyncWebServerRequest* req) {
+    String clientId    = req->hasParam("client_id")    ? req->getParam("client_id")->value() : String();
+    String redirectUri = req->hasParam("redirect_uri") ? req->getParam("redirect_uri")->value()
+                                                      : String("http://127.0.0.1:8888/callback");
+    if (clientId.length() == 0) {
+        req->send(400, "application/json", "{\"error\":\"client_id required\"}");
+        return;
+    }
+    String authUrl = sixback::spotify::genAuthUrl(clientId, redirectUri);
+    JsonDocument doc;
+    doc["auth_url"]     = authUrl;
+    doc["redirect_uri"] = redirectUri;
+    doc["client_id"]    = clientId;
+    String body; serializeJson(doc, body);
+    req->send(200, "application/json", body);
+}
+
+// POST /api/spotify/auth/exchange
+//   Body: {code, clientId, clientSecret, redirectUri}
+// Tauscht Code gegen Tokens + fetcht /v1/me + persistiert via setAuth().
+void handleSpotifyAuthExchange(AsyncWebServerRequest* req, JsonDocument& body) {
+    String code         = (const char*)(body["code"]         | "");
+    String clientId     = (const char*)(body["clientId"]     | "");
+    String clientSecret = (const char*)(body["clientSecret"] | "");
+    String redirectUri  = (const char*)(body["redirectUri"]  | "");
+    if (code.length() == 0 || clientId.length() == 0
+        || clientSecret.length() == 0 || redirectUri.length() == 0) {
+        req->send(400, "application/json",
+                  "{\"error\":\"code+clientId+clientSecret+redirectUri required\"}");
+        return;
+    }
+    String err;
+    if (!sixback::spotify::exchangeAuthCode(code, clientId, clientSecret,
+                                            redirectUri, err)) {
+        JsonDocument out;
+        out["ok"]    = false;
+        out["error"] = err;
+        String s; serializeJson(out, s);
+        req->send(400, "application/json", s);
+        return;
+    }
+    auto st = sixback::spotify::getAuth();
+    JsonDocument out;
+    out["ok"]              = true;
+    out["user_id"]         = st.spotifyUserId;
+    out["display_name"]    = st.spotifyDisplayName;
+    out["expires_in_sec"]  = ((int64_t)st.expiresAtMs - (int64_t)millis()) / 1000;
+    String s; serializeJson(out, s);
+    req->send(200, "application/json", s);
+}
+
+// GET /api/spotify/last-trigger — letzte 8 Trigger-Versuche fuer Debug.
+void handleSpotifyLastTrigger(AsyncWebServerRequest* req) {
+    JsonDocument doc;
+    JsonArray arr = doc["triggers"].to<JsonArray>();
+    uint32_t now = millis();
+    for (auto& e : sixback::spotify::listTriggerLog()) {
+        JsonObject o = arr.add<JsonObject>();
+        o["ts_ms"]            = e.ts_ms;
+        o["age_ms"]           = (int32_t)(now - e.ts_ms);
+        o["device_id"]        = e.deviceId;
+        o["slot"]             = e.slot;
+        o["uri"]              = e.uri;
+        o["speaker_name"]     = e.speakerName;
+        o["spotify_device_id"]= e.spotifyDeviceId;
+        o["play_http_code"]   = e.playHttpCode;
+        o["result"]           = e.result;
+    }
+    String body; serializeJson(doc, body);
+    req->send(200, "application/json", body);
+}
+
+// DELETE /api/spotify/auth — clear auth (Disconnect Spotify).
+void handleSpotifyAuthDelete(AsyncWebServerRequest* req) {
+    sixback::spotify::AuthState empty;
+    sixback::spotify::setAuth(empty);
+    req->send(200, "application/json", "{\"ok\":true}");
+}
+
+// DELETE /api/spotify/slot/{deviceId}/{slot}
+void handleSpotifySlotDelete(AsyncWebServerRequest* req) {
+    String deviceId = req->pathArg(0);
+    int slot = req->pathArg(1).toInt();
+    if (slot < 1 || slot > 6) {
+        req->send(400, "application/json", "{\"error\":\"slot 1..6\"}");
+        return;
+    }
+    sixback::spotify::setSlot(deviceId, slot, "", "");
+    req->send(200, "application/json", "{\"ok\":true}");
+}
+
+#endif // SIXBACK_SPOTIFY_ENABLED
+
 void registerApiEndpoints(AsyncWebServer& ui) {
     // Statische Assets aus LittleFS (CSS, JS, etc.)
     ui.serveStatic("/assets/", LittleFS, "/assets/").setCacheControl("max-age=600");
@@ -2074,6 +2270,21 @@ void registerApiEndpoints(AsyncWebServer& ui) {
     ui.on("/api/events",                                   HTTP_DELETE, handleEventsClear);
     ui.on("^/api/speaker/([^/]+)/now-playing$",            HTTP_GET,    handleNowPlaying);
     ui.on("^/api/speaker/([^/]+)/events$",                 HTTP_GET,    handleSpeakerEvents);
+
+#ifdef SIXBACK_SPOTIFY_ENABLED
+    ui.on("/api/spotify/slots",                            HTTP_GET,    handleSpotifySlotsList);
+    routeJsonBody(ui, "^/api/spotify/slot/([^/]+)/([1-6])$", HTTP_PUT,  handleSpotifySlotPut);
+    ui.on("^/api/spotify/slot/([^/]+)/([1-6])$",           HTTP_DELETE, handleSpotifySlotDelete);
+    // ASYNCWEBSERVER_REGEX=1 — Path-strings ohne ^$ matchen als Prefix.
+    // /api/spotify/auth wuerde sonst /api/spotify/auth/url + /exchange
+    // mitschlucken. Explizit anchored:
+    ui.on("^/api/spotify/auth$",                           HTTP_GET,    handleSpotifyAuthGet);
+    routeJsonBody(ui, "^/api/spotify/auth$",               HTTP_PUT,    handleSpotifyAuthPut);
+    ui.on("^/api/spotify/auth$",                           HTTP_DELETE, handleSpotifyAuthDelete);
+    ui.on("^/api/spotify/auth/url$",                       HTTP_GET,    handleSpotifyAuthUrl);
+    routeJsonBody(ui, "^/api/spotify/auth/exchange$",      HTTP_POST,   handleSpotifyAuthExchange);
+    ui.on("^/api/spotify/last-trigger$",                   HTTP_GET,    handleSpotifyLastTrigger);
+#endif
 
     // OTA — multipart upload. Mit ASYNCWEBSERVER_REGEX=1 binden plain
     // Path-Strings ohne `^...$` als Prefix — /api/ota wuerde dann auch

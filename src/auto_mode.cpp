@@ -255,6 +255,7 @@ void migrateOne_(const Speaker& snap) {
     // mit Emma + Kueche (Slot 6 = MiniDLNA "All Music" → ueberlebt nicht).
     // Identisch zur manuellen migrate-Path (api_endpoints.cpp:370).
     SpeakerInventory::instance().refreshMediaServers(snap.deviceId);
+    SpeakerInventory::instance().refreshSpotifyAccounts(snap.deviceId);
 
     setState_("import-presets");
     int converted = 0, abandoned = 0, total = 0;

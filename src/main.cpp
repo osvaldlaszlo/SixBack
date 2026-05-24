@@ -5,7 +5,7 @@
 //   - WiFi via Improv-Serial (NVS-persistent, SixBack läuft auf NVS-Credentials)
 //   - HTTP-Server :8000 = Bose-Cloud-Replacement (11 Endpoints)
 //   - HTTP-Server :80   = REST-API + Web-UI (SPA aus LittleFS)
-//   - mDNS-Hostname: sixback.local (+ legacy bosefix.local fuer 30 Tage)
+//   - mDNS-Hostname: sixback.local
 //   - Speaker-Inventory + Preset-Store persistent in NVS
 
 #include <Arduino.h>
@@ -22,6 +22,7 @@
 #include "bose_endpoints.h"
 #include "api_endpoints.h"
 #include "event_store.h"
+#include "spotify_player.h"
 #include "wifi_provisioning.h"
 #include "speaker_inventory.h"
 #include "preset_store.h"
@@ -29,6 +30,7 @@
 #include "system_health.h"
 #include "auto_mode.h"
 #include "nvs_helper.h"
+#include "marge_keepalive.h"
 
 static AsyncWebServer boseServer(BOSE_HTTP_PORT);
 static AsyncWebServer uiServer(UI_HTTP_PORT);
@@ -75,22 +77,15 @@ static void connectWifi() {
 static void startMDNS() {
     if (!MDNS.begin(MDNS_HOSTNAME)) { Serial.println("[mdns] failed"); return; }
     MDNS.addService("http", "tcp", UI_HTTP_PORT);
-    // Primary service-type "sixback" + legacy "bosefix" als Co-Existence-
-    // Annonce fuer 30 Tage nach Rename. Bestehende User-Bookmarks
-    // ("avahi-browse _bosefix._tcp", alte Skripte) bleiben funktionsfaehig.
-    // TODO 2026-06-21: legacy entfernen.
     MDNS.addService("sixback", "tcp", BOSE_HTTP_PORT);
     MDNS.addServiceTxt("sixback", "tcp", "version", FW_VERSION_STRING);
     MDNS.addServiceTxt("sixback", "tcp", "build",   FW_BUILD_DATE);
-    MDNS.addService(MDNS_LEGACY_HOSTNAME, "tcp", BOSE_HTTP_PORT);
-    MDNS.addServiceTxt(MDNS_LEGACY_HOSTNAME, "tcp", "version", FW_VERSION_STRING);
-    MDNS.addServiceTxt(MDNS_LEGACY_HOSTNAME, "tcp", "build",   FW_BUILD_DATE);
-    Serial.printf("[mdns] %s.local advertised (legacy %s.local co-announced)\n",
-                  MDNS_HOSTNAME, MDNS_LEGACY_HOSTNAME);
+    Serial.printf("[mdns] %s.local advertised\n", MDNS_HOSTNAME);
 }
 
 static void startBoseServer() {
     sixback::eventStoreInit();
+    sixback::spotify::init();      // registriert preset-pressed-Callback
     registerBoseEndpoints(boseServer);
     boseServer.begin();
     Serial.printf("[bose] cloud-replacement listening on :%d\n", BOSE_HTTP_PORT);
@@ -131,6 +126,8 @@ void setup() {
     startUiServer();
     sixback::healthInit();        // Crash-Counter, Task-WDT, WiFi-/Heap-Watchdog
     sixback::startAutoModeTask(); // No-op wenn NVS-Flag auto-mode disabled
+    sixback::startMargeKeepAlive(); // 5min-Ping an /setMargeAccount damit
+                                    // scmudc-Event-Stream nicht stehen bleibt
 
     Serial.println();
     Serial.printf("[setup] SixBack ready - UI: http://%s.local/\n", MDNS_HOSTNAME);
@@ -141,6 +138,7 @@ void setup() {
 void loop() {
     sixback::wifiProvisioningTick();
     sixback::healthTick();         // Task-WDT-feed, WiFi/Heap-Watchdog, Self-Ping
+    sixback::spotify::refreshTick(); // proaktiver Access-Token-Refresh, 60s-Rate-Limit intern
     static uint32_t lastBeat = 0;
     if (millis() - lastBeat > 30000) {
         lastBeat = millis();

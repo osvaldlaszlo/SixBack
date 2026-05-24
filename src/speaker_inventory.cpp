@@ -124,6 +124,14 @@ void SpeakerInventory::loadFromNVS() {
                 s.mediaServerUuids.emplace_back((const char*)v);
             }
         }
+        if (o["spotifyAccounts"].is<JsonArray>()) {
+            for (JsonObject sp : o["spotifyAccounts"].as<JsonArray>()) {
+                Speaker::SpotifyAccount sa;
+                sa.sourceAccount = (const char*)(sp["sourceAccount"] | "");
+                sa.displayName   = (const char*)(sp["displayName"]   | "");
+                if (sa.sourceAccount.length() > 0) s.spotifyAccounts.push_back(sa);
+            }
+        }
         speakers_.push_back(s);
     }
     Serial.printf("[inv] loaded %u speakers from NVS\n",
@@ -149,6 +157,14 @@ void SpeakerInventory::saveToNVS() {
         if (!s.mediaServerUuids.empty()) {
             JsonArray msa = o["mediaServerUuids"].to<JsonArray>();
             for (const auto& uuid : s.mediaServerUuids) msa.add(uuid);
+        }
+        if (!s.spotifyAccounts.empty()) {
+            JsonArray spa = o["spotifyAccounts"].to<JsonArray>();
+            for (const auto& sa : s.spotifyAccounts) {
+                JsonObject sp = spa.add<JsonObject>();
+                sp["sourceAccount"] = sa.sourceAccount;
+                sp["displayName"]   = sa.displayName;
+            }
         }
     }
     nvsSaveJson(NVS_NS, NVS_KEY, doc);
@@ -654,6 +670,84 @@ void SpeakerInventory::refreshMediaServers(const String& deviceId) {
         p->mediaServerUuids = uuids;
         Serial.printf("[inv][ms] %s -> %u DLNA-server UUIDs cached\n",
                       deviceId.c_str(), (unsigned)uuids.size());
+    }
+    saveToNVS();
+}
+
+// Holt BMX /sources vom Speaker und persistiert alle SPOTIFY-Items mit
+// status="READY" in Speaker::spotifyAccounts. Diagnose-Only (Stufe 0) —
+// macht linked Spotify-Accounts pro Speaker im UI sichtbar. Schema-Beleg
+// (verifiziert aus Pre-Migration-Snapshots fred_feuerstein 2026-05-22):
+//   <sourceItem source="SPOTIFY" sourceAccount="<user-id>" status="READY"
+//       isLocal="false" multiroomallowed="true">DisplayText</sourceItem>
+void SpeakerInventory::refreshSpotifyAccounts(const String& deviceId) {
+    String ip;
+    {
+        LockGuard g(*this);
+        Speaker* p = findById(deviceId);
+        if (!p) return;
+        ip = p->ip;
+    }
+    if (ip.length() == 0) return;
+
+    HTTPClient http;
+    http.setReuse(false);
+    http.setConnectTimeout(1500);
+    http.setTimeout(3000);
+    String url = "http://" + ip + ":" + String(BOSE_BMX_PORT) + "/sources";
+    if (!http.begin(url)) return;
+    int code = http.GET();
+    if (code != 200) { http.end(); return; }
+    String xml = http.getString();
+    http.end();
+
+    // SPOTIFY READY-Items extrahieren. Mehrere Accounts pro Speaker moeglich
+    // (fred-Snapshot 2026-05-22 hatte 2 verschiedene Spotify-User auf
+    // demselben Speaker). Display-Text steht zwischen Tag-Ende und naechstem
+    // <sourceItem> oder /-Selbst-Tag — bei status="READY" hat das Item den
+    // Display-Namen (typisch eine Mail-Adresse) als XML-Textinhalt.
+    std::vector<Speaker::SpotifyAccount> accs;
+    int pos = 0;
+    while (true) {
+        int siStart = xml.indexOf("<sourceItem ", pos);
+        if (siStart < 0) break;
+        int tagEnd = xml.indexOf(">", siStart);
+        if (tagEnd < 0) break;
+        String tag = xml.substring(siStart, tagEnd);  // ohne ">"
+        pos = tagEnd + 1;
+        bool selfClose = (tag.length() > 0 && tag.endsWith("/"));
+        // Nur SPOTIFY + READY weiter betrachten — UNAVAILABLE-Defaults
+        // (SpotifyConnectUserName / SpotifyAlexaUserName) skippen.
+        if (tag.indexOf("source=\"SPOTIFY\"") < 0) continue;
+        if (tag.indexOf("status=\"READY\"")   < 0) continue;
+        int accIdx = tag.indexOf("sourceAccount=\"");
+        if (accIdx < 0) continue;
+        int accStart = accIdx + 15;
+        int accEnd = tag.indexOf("\"", accStart);
+        if (accEnd <= accStart) continue;
+        Speaker::SpotifyAccount sa;
+        sa.sourceAccount = tag.substring(accStart, accEnd);
+        // DisplayName: Textinhalt bis </sourceItem>, nur wenn nicht selfclose.
+        if (!selfClose) {
+            int closeIdx = xml.indexOf("</sourceItem>", pos);
+            if (closeIdx > pos) {
+                sa.displayName = xml.substring(pos, closeIdx);
+                sa.displayName.trim();
+                pos = closeIdx + 13;
+            }
+        }
+        if (sa.sourceAccount.length() > 0) accs.push_back(sa);
+    }
+
+    LockGuard g(*this);
+    if (Speaker* p = findById(deviceId)) {
+        p->spotifyAccounts = accs;
+        Serial.printf("[inv][spot] %s -> %u Spotify accounts (READY)\n",
+                      deviceId.c_str(), (unsigned)accs.size());
+        for (const auto& a : accs) {
+            Serial.printf("[inv][spot]   account=%s display=%s\n",
+                          a.sourceAccount.c_str(), a.displayName.c_str());
+        }
     }
     saveToNVS();
 }

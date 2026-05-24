@@ -122,6 +122,18 @@
                        font-weight: 600; margin-bottom: .15em; }
   .preset .slot-edit-badge { color: var(--warn); font-weight: 700; font-size: .9em; }
   .preset .slot-synced-badge { color: var(--ok); font-weight: 600; }
+  .preset .slot-spot-badge { cursor: pointer; font-size: 1em; padding: 0 .25em;
+                             border-radius: 3px; user-select: none;
+                             transition: opacity .15s, background .15s; }
+  .preset .slot-spot-badge.unbound { opacity: .25; }
+  .preset .slot-spot-badge.unbound:hover { opacity: .8; }
+  .preset .slot-spot-badge.bound { background: #1ed760; color: #000;
+                                   padding: 1px 4px; font-weight: 700; }
+  .preset .slot-spot-badge.bound:hover { background: #1aaf4e; }
+  .preset .slot-spot-badge.warn  { background: #d4a000; color: #000;
+                                   padding: 1px 4px; font-weight: 700;
+                                   border: 1px dashed #fff4cf; }
+  .preset .slot-spot-badge.warn:hover { background: #b08800; }
   .preset .slot-row { display: flex; align-items: center; gap: .4em;
                       padding: .2em 0; min-height: 1.5em; }
   .preset .slot-row.hw    { border-bottom: 1px dashed var(--line); padding-bottom: .35em; }
@@ -514,6 +526,57 @@
     or to roll back to an older release. App image goes first, LittleFS image
     second; the ESP reboots after each flash and the page reloads ~9 s later.
   </p>
+</div>
+
+<div class="fwcard" id="spotify-card">
+  <h2>🎵 Spotify integration</h2>
+  <p class="hint" style="margin-top:0">
+    Bind a Spotify URI (track / playlist / album) to a preset slot. When the
+    user presses that slot on the speaker, SixBack triggers Spotify Connect
+    to play the URI on the speaker (requires Spotify Premium and one-time
+    OAuth-Login of your account).
+  </p>
+  <div id="spot-status" style="margin:.4em 0; padding:.6em .8em; border-radius:4px; background:#1f2a1f; border-left:3px solid #88c">
+    <span class="mute">Loading Spotify status…</span>
+  </div>
+  <div id="spot-triggers" style="margin:.4em 0 .8em; font-size:.88em">
+    <div style="color:var(--mute); margin-bottom:.2em">Last preset-button triggers:</div>
+    <div id="spot-triggers-list">—</div>
+  </div>
+  <p style="font-size:.85em; color:var(--mute); margin:.5em 0; padding:.5em .7em; background:#332f1a; border-left:3px solid #d4a000">
+    <b>One-time speaker pairing required:</b> open the Spotify app on your phone or desktop,
+    pick your Bose speaker (e.g. Emma) from the "Connect to a device" menu, and start any
+    track on it. After that the speaker is registered with your Spotify account and SixBack
+    can trigger it for every preset press. If a speaker reboots, repeat once.
+  </p>
+  <details id="spot-connect-details">
+    <summary style="cursor:pointer; font-weight:600; padding:.3em 0">Connect / re-link Spotify account</summary>
+    <ol style="font-size:.9em; line-height:1.55; padding-left:1.4em">
+      <li>Create a Spotify Developer App at
+        <a href="https://developer.spotify.com/dashboard" target="_blank" rel="noopener">developer.spotify.com/dashboard</a>
+        (one-click, free, no app review needed).</li>
+      <li>In the app settings, set the <b>redirect URI</b> to:
+        <code id="spot-redirect-uri">http://127.0.0.1:8888/callback</code>
+      </li>
+      <li>Copy Client&nbsp;ID and Client&nbsp;Secret here:
+        <div style="display:grid; grid-template-columns:auto 1fr; gap:.4em .6em; margin:.6em 0; max-width:600px">
+          <label style="align-self:center">Client ID</label>
+          <input type="text" id="spot-clientid" placeholder="32-char hex">
+          <label style="align-self:center">Client Secret</label>
+          <input type="password" id="spot-clientsecret" placeholder="32-char hex (kept on ESP only)">
+        </div>
+        <button class="primary" onclick="spotifyOpenAuth()">Open Spotify auth in new tab</button>
+      </li>
+      <li>After authorizing, your browser will redirect to
+        <code>127.0.0.1:8888/callback?code=…</code> and fail to load.
+        That is OK. Copy the FULL URL from the address bar and paste it here:
+        <input type="text" id="spot-callbackurl"
+               placeholder="http://127.0.0.1:8888/callback?code=…&amp;state=…"
+               style="margin:.4em 0; width:100%; max-width:600px">
+        <button class="primary" onclick="spotifyExchangeCode()">Complete setup</button>
+      </li>
+    </ol>
+  </details>
 </div>
 
 <div class="syspanel">
@@ -1190,6 +1253,11 @@ function actionButtonsHtml(s) {
 function speakerCard(s, myBase) {
   const cloudLine = s.cloud_url
     ? `<div class="speaker-info speaker-cloud">cloud URL: <code>${esc(s.cloud_url)}</code></div>` : '';
+  const spotifyLine = (s.spotify_accounts && s.spotify_accounts.length > 0)
+    ? `<div class="speaker-info" title="Spotify accounts linked in the speaker eSDK (READY in BMX /sources). Stage 0 diagnostic — survival across migration is not yet guaranteed.">Spotify: ${
+        s.spotify_accounts.map(a => `<code>${esc(a.display_name || a.source_account)}</code>`).join(', ')
+      }</div>`
+    : '';
   return `
     <div class="speaker" id="sp-${s.device_id}" data-device-id="${esc(s.device_id)}">
       <div class="speaker-head">
@@ -1197,6 +1265,7 @@ function speakerCard(s, myBase) {
           <div class="speaker-title">${esc(s.name || s.device_id)}  ${pillForStatus(s, myBase)}</div>
           <div class="speaker-info">${esc(s.model)} · ${esc(s.ip)} · ${esc(s.device_id)} · FW ${esc((s.firmware||'').substring(0,15))}${s.group_id ? ' · group: '+esc(s.group_id) : ''}</div>
           ${cloudLine}
+          ${spotifyLine}
         </div>
         <div class="actions">${actionButtonsHtml(s)}</div>
       </div>
@@ -1335,12 +1404,34 @@ function presetCard(devId, slotNum) {
   if (opaque) cls += ' opaque';
   if (storeEmpty && hwEmpty) cls += ' empty';
 
-  // Header line: slot number + edit/sync badge
+  // Header line: slot number + edit/sync badge + Spotify badge
   let badge = '';
   if (storeEmpty && hwEmpty)  badge = '';
   else if (synced)            badge = '<span class="slot-synced-badge">✓ synced</span>';
   else                        badge = '<span class="slot-edit-badge">✏ unsaved</span>';
-  const head = `<div class="slot-head"><span>Preset ${slotNum}</span>${badge}</div>`;
+  // Spotify-Binding-Indikator. Klick → URI-Eingabe. Stop-propagation, sonst
+  // triggert onPresetClick auf der Karte.
+  // 4 Zustände: (connected × bound) — connected+bound=grün, connected+unbound=grau,
+  // disconnected+bound=gelb mit warn-tooltip, disconnected+unbound=kein Badge.
+  const spotKey       = `${devId}_${slotNum}`;
+  const spotBind      = STATE.spotifySlots[spotKey];
+  const spotConnected = !!(STATE.spotifyAuth && STATE.spotifyAuth.configured);
+  let spotBadge = '';
+  if (spotConnected && spotBind) {
+    spotBadge = `<span class="slot-spot-badge bound"
+             title="Spotify: ${esc(spotBind.uri)}\n(click to edit / clear)"
+             onclick="event.stopPropagation(); spotifySetSlot('${esc(devId)}', ${slotNum})">🎵</span>`;
+  } else if (spotConnected && !spotBind) {
+    spotBadge = `<span class="slot-spot-badge unbound"
+             title="Bind this slot to a Spotify URI"
+             onclick="event.stopPropagation(); spotifySetSlot('${esc(devId)}', ${slotNum})">🎵</span>`;
+  } else if (!spotConnected && spotBind) {
+    spotBadge = `<span class="slot-spot-badge warn"
+             title="Spotify not connected — this binding won't fire.\nURI: ${esc(spotBind.uri)}\n(click to edit / clear; connect Spotify below to enable)"
+             onclick="event.stopPropagation(); spotifySetSlot('${esc(devId)}', ${slotNum})">🎵</span>`;
+  }
+  // else: not connected + not bound → no badge at all
+  const head = `<div class="slot-head"><span>Preset ${slotNum}</span>${badge}${spotBadge}</div>`;
 
   let body;
   if (storeEmpty && hwEmpty) {
@@ -3175,6 +3266,215 @@ try {
     document.getElementById('sb-handle-text').textContent = '';
   }
 } catch(e){}
+// ---- Spotify ----------------------------------------------------------
+// Slot-Map cache: { "DEVICEID_N": "spotify:uri" }; used by presetCard() to
+// stamp a Spotify badge onto Slot N of that speaker.
+STATE.spotifySlots = {};
+STATE.spotifyAuth  = null;
+
+async function loadSpotifyAuth() {
+  try {
+    const r = await api('/api/spotify/auth');
+    STATE.spotifyAuth = r;
+    renderSpotifyStatus_();
+  } catch(e) {
+    document.getElementById('spot-status').innerHTML =
+      `<span style="color:#fda">Spotify status unavailable: ${esc(e.message)}</span>`;
+  }
+}
+
+function renderSpotifyStatus_() {
+  const s = STATE.spotifyAuth || {};
+  const el = document.getElementById('spot-status');
+  const det = document.getElementById('spot-connect-details');
+  if (s.configured && s.has_refresh_token) {
+    const who = s.display_name || s.user_id || '(unknown user)';
+    const exp = s.expires_in_sec || 0;
+    let expTxt;
+    if (exp > 60) expTxt = `access-token valid for ${Math.floor(exp/60)} min`;
+    else if (exp > 0) expTxt = `access-token expires in ${exp} s`;
+    else expTxt = `access-token expired — will refresh on next trigger`;
+    el.innerHTML =
+      `<b style="color:#9d8">✓ Connected</b> as <code>${esc(who)}</code>
+       <span class="mute" style="margin-left:.6em">(${esc(expTxt)})</span>
+       <button onclick="spotifyDisconnect()" style="float:right; font-size:.85em">Disconnect</button>`;
+    // Collapse the "connect" details when connected — but allow re-opening
+    // for re-link.
+    if (det) det.open = false;
+  } else {
+    el.innerHTML = `<b style="color:#fda">○ Not connected</b>
+       <span class="mute" style="margin-left:.6em">Press a slot button → no Spotify action.</span>`;
+    if (det) det.open = true;
+  }
+}
+
+async function loadSpotifySlots() {
+  try {
+    const r = await api('/api/spotify/slots');
+    STATE.spotifySlots = {};
+    (r.slots || []).forEach(m => {
+      const key = `${m.device_id}_${m.slot}`;
+      STATE.spotifySlots[key] = { uri: m.spotify_uri, name: m.display_name || '' };
+    });
+    // re-render speaker cards so the badge appears
+    renderSpeakers();
+  } catch(_) {}
+}
+
+async function spotifyOpenAuth() {
+  const cid = document.getElementById('spot-clientid').value.trim();
+  const sec = document.getElementById('spot-clientsecret').value.trim();
+  if (!cid || !sec) { toast('Client ID and Secret required', 'error'); return; }
+  // Stash so we can use them in the exchange step (NOT sent to ESP until
+  // exchange).
+  STATE._spotPending = { clientId: cid, clientSecret: sec,
+                         redirectUri: 'http://127.0.0.1:8888/callback' };
+  try {
+    const r = await api('/api/spotify/auth/url?client_id='
+                        + encodeURIComponent(cid)
+                        + '&redirect_uri='
+                        + encodeURIComponent(STATE._spotPending.redirectUri));
+    window.open(r.auth_url, '_blank', 'noopener');
+    toast('Authorize in the new tab, then paste the redirected URL below', 'success');
+  } catch(e) {
+    toast('auth-url failed: ' + e.message, 'error');
+  }
+}
+
+async function spotifyExchangeCode() {
+  if (!STATE._spotPending) { toast('Press "Open Spotify auth" first', 'error'); return; }
+  const url = document.getElementById('spot-callbackurl').value.trim();
+  if (!url) { toast('Paste the redirected URL', 'error'); return; }
+  // Extract ?code=...&state=...
+  const m = url.match(/[?&]code=([^&]+)/);
+  if (!m) { toast('No "code" parameter in URL', 'error'); return; }
+  const code = decodeURIComponent(m[1]);
+  try {
+    const r = await api('/api/spotify/auth/exchange', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({
+        code, ...STATE._spotPending
+      })
+    });
+    toast(`Spotify connected: ${r.display_name || r.user_id}`, 'success');
+    document.getElementById('spot-callbackurl').value = '';
+    document.getElementById('spot-clientid').value = '';
+    document.getElementById('spot-clientsecret').value = '';
+    STATE._spotPending = null;
+    loadSpotifyAuth();
+  } catch(e) {
+    toast('Exchange failed: ' + e.message, 'error');
+  }
+}
+
+async function loadSpotifyTriggers() {
+  try {
+    const r = await api('/api/spotify/last-trigger');
+    const trigs = (r.triggers || []).slice().reverse();   // neueste oben
+    const el = document.getElementById('spot-triggers-list');
+    if (trigs.length === 0) {
+      el.innerHTML = '<span class="mute">No preset-button triggers yet — press a preset on a speaker</span>';
+      return;
+    }
+    el.innerHTML = trigs.slice(0,4).map(t => {
+      const age = Math.floor(t.age_ms / 1000);
+      const ageTxt = age < 60 ? `${age}s` : age < 3600 ? `${Math.floor(age/60)}m` : `${Math.floor(age/3600)}h`;
+      let resColor, resIcon, resHint = '';
+      if (t.result === 'ok') {
+        resColor = '#9d8'; resIcon = '✓';
+      } else if (t.result === 'not-in-devices') {
+        resColor = '#fda'; resIcon = '⚠';
+        resHint = ' — speaker not paired in Spotify app (see hint below)';
+      } else if (t.result === 'no-auth') {
+        resColor = '#f88'; resIcon = '✗';
+        resHint = ' — connect Spotify below';
+      } else if (t.result === 'no-mapping') {
+        resColor = '#888'; resIcon = '·';
+        resHint = ' — slot has no Spotify URI assigned';
+      } else {
+        resColor = '#f88'; resIcon = '✗';
+        resHint = ` — ${t.result}`;
+      }
+      const uri = (t.uri || '').replace(/\?.*$/,'');
+      return `<div style="padding:.15em 0">
+        <span style="color:${resColor}; font-weight:700">${resIcon}</span>
+        <code style="font-size:.85em">${esc(t.speaker_name || '?')} slot ${t.slot}</code>
+        <span class="mute" style="font-size:.85em"> ${ageTxt} ago${esc(resHint)}</span>
+        ${uri ? `<div style="margin-left:1.5em; font-size:.8em; color:var(--mute)">${esc(uri)}</div>` : ''}
+      </div>`;
+    }).join('');
+  } catch(_) {}
+}
+
+async function spotifyDisconnect() {
+  if (!confirm('Disconnect Spotify? Existing slot mappings stay but will not trigger playback until you re-link.')) return;
+  try {
+    await api('/api/spotify/auth', { method: 'DELETE' });
+    toast('Spotify disconnected', 'success');
+    loadSpotifyAuth();
+  } catch(e) {
+    toast('Disconnect failed: ' + e.message, 'error');
+  }
+}
+
+// Normalisiert User-Eingabe zu spotify:{type}:{id}.
+// Akzeptiert:
+//   spotify:album:XXX                                   (URI, return as-is)
+//   https://open.spotify.com/album/XXX?si=...           (Share-URL)
+//   https://open.spotify.com/intl-de/playlist/XXX?...   (Locale-Share-URL)
+//   open.spotify.com/track/XXX (auch ohne Scheme)
+// Liefert '' wenn input nichts Spotify-artiges ist.
+function spotifyNormalizeUri_(input) {
+  const s = (input || '').trim();
+  if (s === '') return '';
+  // Reine URI — Tracking-Tail wie "?si=..." abschneiden (Mobile-Share liefert
+  // manchmal "spotify:album:XXX?si=YYY").
+  if (s.startsWith('spotify:')) return s.split('?')[0];
+  // Spotify-Share-URL: optional Schema, optional intl-XX/, dann type/id
+  const m = s.match(/(?:https?:\/\/)?open\.spotify\.com\/(?:intl-[a-z]{2}\/)?(album|playlist|track|artist|episode|show)\/([a-zA-Z0-9]+)/);
+  if (m) return `spotify:${m[1]}:${m[2]}`;
+  return '';
+}
+
+async function spotifySetSlot(devId, slot) {
+  const cur = STATE.spotifySlots[`${devId}_${slot}`];
+  const def = cur ? cur.uri : '';
+  const raw = prompt(
+    `Spotify URI or Share-URL for slot ${slot}\n\n` +
+    `Accepts either:\n` +
+    `  spotify:album:5F0IQXuHfTV7SBvZVnXERl\n` +
+    `  https://open.spotify.com/album/5F0IQXuHfTV7SBvZVnXERl?si=...\n` +
+    `  https://open.spotify.com/intl-de/playlist/37i9dQZF1DXcBWIGoYBM5M?...\n\n` +
+    `(Leave blank to clear the Spotify binding for this slot.)`,
+    def
+  );
+  if (raw === null) return; // cancel
+  const trimmed = raw.trim();
+  try {
+    if (trimmed === '') {
+      await api(`/api/spotify/slot/${devId}/${slot}`, { method: 'DELETE' });
+      toast(`Slot ${slot}: Spotify binding cleared`, 'success');
+    } else if (!trimmed.startsWith('spotify:') && !spotifyNormalizeUri_(trimmed)) {
+      toast('Unrecognized — paste a Spotify URI or share URL', 'error');
+      return;
+    } else {
+      const uri = spotifyNormalizeUri_(trimmed) || trimmed;
+      const name = prompt('Display name (optional, UI only):',
+                          cur ? cur.name : '') || '';
+      await api(`/api/spotify/slot/${devId}/${slot}`, {
+        method: 'PUT',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ uri, name })
+      });
+      toast(`Slot ${slot}: bound to ${uri}`, 'success');
+    }
+    loadSpotifySlots();
+  } catch(e) {
+    toast('Set Spotify slot failed: ' + e.message, 'error');
+  }
+}
+
 streamLoadFromLocalStorage();
 // D&D-Hinweis-Banner: persistent dismiss via localStorage. Wer ihn weggeklickt
 // hat, sieht ihn nicht wieder (es sei denn, localStorage wird geleert).
@@ -3193,6 +3493,12 @@ setInterval(loadStatus, 10000);
 // status sync ziehen — falls zwischenzeitlich ein Install laeuft, zeigt
 // das die UI sofort wieder an.
 setTimeout(pollOnline, 1500);
+// Spotify status — load once + refresh every 60s to show fresh expiry.
+loadSpotifyAuth();
+loadSpotifySlots();
+loadSpotifyTriggers();
+setInterval(loadSpotifyAuth, 60000);
+setInterval(loadSpotifyTriggers, 5000);   // alle 5s damit User schnell sieht ob trigger angekommen
 </script>
 
 <!-- Progress modal — used by 🔄 Status and push-all flows. The backdrop is

@@ -51,6 +51,17 @@ struct Speaker {
     // Match damit STORED_MUSIC-Presets nicht als "Quelle nicht vorhanden"
     // verworfen werden. Liste wird bei Migrate/Refresh aktualisiert.
     std::vector<String> mediaServerUuids;
+
+    // Spotify-Accounts die der Speaker via BMX /sources als READY meldet.
+    // Pre-Bose-Cloud-Shutdown verknuepft, eSDK-Token im Speaker-NVS. Aus
+    // dem <sourceItem source="SPOTIFY" sourceAccount="..." status="READY">
+    // ausgelesen. Diagnose-Only (Stufe 0) — Migration-Persistenz folgt mit
+    // OAuth-Flow + account/full-Token-Injection (Stufe 1).
+    struct SpotifyAccount {
+        String sourceAccount;   // z.B. "fredfeuerstein1972" oder opaque Spotify-User-ID
+        String displayName;     // z.B. "fred@herr-der-mails.de" (XML-Text-Inhalt)
+    };
+    std::vector<SpotifyAccount> spotifyAccounts;
 };
 
 enum class ProbeFailReason : uint8_t {
@@ -130,6 +141,13 @@ public:
     // STORED_MUSIC-Presets nach Cloud-Wechsel weiter funktionieren (siehe
     // Memo reference-bosefix32-stored-music-source-decl).
     void refreshMediaServers(const String& deviceId);
+
+    // BMX /sources vom Speaker pullen und alle SPOTIFY READY-Items in
+    // Speaker::spotifyAccounts persistieren. Diagnose-Only (Stufe 0): macht
+    // die linked Spotify-Accounts pro Speaker im UI sichtbar. Stufe 1 wird
+    // OAuth-Flow + Refresh-Token-Injection in account/full ergaenzen damit
+    // Spotify nach Migration nicht nach 60min ausfaellt.
+    void refreshSpotifyAccounts(const String& deviceId);
 
     // Loescht einen Speaker aus dem Cache (nicht vom Geraet).
     bool remove(const String& deviceId);

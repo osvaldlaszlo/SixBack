@@ -1,0 +1,22 @@
+# BoseFix32 — 4 MB Flash, Asymmetric OTA (C3 / C6)
+# 2026-05-24: app0 vergroessert auf 2.5MB damit Spotify + DLNA-Code passen
+# (vorher 1.81MB war zu eng — c6 mit Spotify+DLNA waere ueber 100%).
+#
+# app0 = "voller" SixBack (Spotify + DLNA + alles).
+# app1 = 1MB Recovery-Slot. Aktuell leer / nur factory-flash.
+#       Zukuenftig: minimaler Recovery-Build (WiFi+Improv+Web-UI fuer OTA-Pull),
+#       wird vom Bootloader nur aktiviert wenn app0 unbootbar (Watchdog-Reset
+#       3x in Folge). Bis dahin: OTA-Update schreibt immer nach app0
+#       (kein A/B-Rollback in dieser Variante).
+#
+# spiffs 384KB: Spielraum fuer DLNA-Browse-Cache-Pages (lokale CDS-Antworten).
+# Vorher 256KB war fuer reines HTML.gz ausreichend, aber DLNA-Browse-Result-
+# Caching profitiert von mehr.
+#
+# Name,    Type, SubType,  Offset,   Size,     Flags
+nvs,      data, nvs,      0x9000,   0x5000,
+otadata,  data, ota,      0xe000,   0x2000,
+app0,     app,  ota_0,    0x10000,  0x280000,
+app1,     app,  ota_1,    0x290000, 0x100000,
+spiffs,   data, spiffs,   0x390000, 0x60000,
+coredump, data, coredump, 0x3F0000, 0x10000,

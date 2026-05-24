@@ -18,10 +18,19 @@
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
+#include <functional>
 
 namespace sixback {
 
 void eventStoreInit();
+
+// Callback fuer preset-pressed-Events (User druckt Slot 1-6 am Speaker).
+// Wird mit (deviceId, slotNumber 1..6, origin "ir-remote"|"console") aufgerufen.
+// Nutzung: spotify_player registriert sich hier um auf Spotify-Slots zu reagieren.
+using PresetPressedCallback = std::function<void(const String& deviceId,
+                                                  int slot,
+                                                  const String& origin)>;
+void eventStoreSetPresetPressedCallback(PresetPressedCallback cb);
 
 // Body-Akkumulator fuer den AsyncWebServer-Body-Callback. Sammelt Chunks bis
 // total erreicht und ingestiert dann. Returns true wenn Ingestion erfolgte.

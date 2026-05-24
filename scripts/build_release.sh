@@ -72,12 +72,15 @@ echo ">>> SixBack release build, version=$VERSION"
 # again silently.
 #
 # Limits MUST stay in sync with the partition CSVs:
-#   partitions-4mb.csv  -> APP_4MB / FS_4MB
-#   partitions.csv      -> APP_16MB / FS_16MB
-APP_4MB=$((0x1D0000))      # 1.900.544  — app0/app1 in partitions-4mb.csv
-FS_4MB=$((0x40000))        #   262.144  — spiffs   in partitions-4mb.csv
-APP_16MB=$((0x300000))     # 3.145.728  — app0/app1 in partitions.csv
-FS_16MB=$((0x9E0000))      # 10.354.688 — spiffs   in partitions.csv
+#   partitions-4mb.csv      -> APP_4MB_SYM / FS_4MB_SYM   (esp32-classic)
+#   partitions-4mb-asym.csv -> APP_4MB_ASYM / FS_4MB_ASYM (c3 / c6, v0.7.7+)
+#   partitions.csv          -> APP_16MB / FS_16MB         (s3)
+APP_4MB_SYM=$((0x1D0000))   # 1.900.544 — app0/app1 in partitions-4mb.csv (esp32)
+FS_4MB_SYM=$((0x40000))     #   262.144 — spiffs   in partitions-4mb.csv
+APP_4MB_ASYM=$((0x280000))  # 2.621.440 — app0     in partitions-4mb-asym.csv (c3/c6)
+FS_4MB_ASYM=$((0x60000))    #   393.216 — spiffs   in partitions-4mb-asym.csv
+APP_16MB=$((0x300000))      # 3.145.728 — app0/app1 in partitions.csv (s3)
+FS_16MB=$((0x9E0000))       # 10.354.688 — spiffs   in partitions.csv
 
 size_errors=0
 check_size() {
@@ -97,14 +100,14 @@ check_size() {
   fi
 }
 
-check_size "$PIO_BUILD/esp32/firmware.bin" $APP_4MB  "esp32 app"
-check_size "$PIO_BUILD/esp32/littlefs.bin" $FS_4MB   "esp32 fs"
-check_size "$PIO_BUILD/c3/firmware.bin"    $APP_4MB  "c3 app"
-check_size "$PIO_BUILD/c3/littlefs.bin"    $FS_4MB   "c3 fs"
-check_size "$PIO_BUILD/c6/firmware.bin"    $APP_4MB  "c6 app"
-check_size "$PIO_BUILD/c6/littlefs.bin"    $FS_4MB   "c6 fs"
-check_size "$PIO_BUILD/s3/firmware.bin"    $APP_16MB "s3 app"
-check_size "$PIO_BUILD/s3/littlefs.bin"    $FS_16MB  "s3 fs"
+check_size "$PIO_BUILD/esp32/firmware.bin" $APP_4MB_SYM  "esp32 app"
+check_size "$PIO_BUILD/esp32/littlefs.bin" $FS_4MB_SYM   "esp32 fs"
+check_size "$PIO_BUILD/c3/firmware.bin"    $APP_4MB_ASYM "c3 app"
+check_size "$PIO_BUILD/c3/littlefs.bin"    $FS_4MB_ASYM  "c3 fs"
+check_size "$PIO_BUILD/c6/firmware.bin"    $APP_4MB_ASYM "c6 app"
+check_size "$PIO_BUILD/c6/littlefs.bin"    $FS_4MB_ASYM  "c6 fs"
+check_size "$PIO_BUILD/s3/firmware.bin"    $APP_16MB     "s3 app"
+check_size "$PIO_BUILD/s3/littlefs.bin"    $FS_16MB      "s3 fs"
 
 if [ "$size_errors" -gt 0 ]; then
   echo >&2
@@ -139,16 +142,17 @@ merge_target() {
 #   ESP32 (classic): 0x1000  (Boot-ROM springt dorthin)
 #   S3 / C3 / C6 / S2 / C2 / C5 / C61 / H2 / P4: 0x0
 # spiffs offsets must match the corresponding partition table:
-#   partitions.csv      (16 MB) -> spiffs @ 0x610000
-#   partitions-4mb.csv  ( 4 MB) -> spiffs @ 0x3B0000  (geaendert 2026-05-23 v0.7.4,
-#       app-Slots auf 0x1D0000 vergroessert; spiffs auf 256 KB.
+#   partitions.csv          (16 MB)      -> spiffs @ 0x610000   (s3)
+#   partitions-4mb.csv      ( 4 MB sym)  -> spiffs @ 0x3B0000   (esp32-classic)
+#   partitions-4mb-asym.csv ( 4 MB asym) -> spiffs @ 0x390000   (c3 / c6, v0.7.7+)
+#       app0 auf 0x280000 vergroessert (2.5 MB); spiffs auf 384 KB.
 #       Wer das mal wieder anpasst: hier mitziehen, sonst landet das
 #       LittleFS-Image im falschen Flash-Bereich und der Web-Flasher
-#       liefert kaputte Factory-Images aus.)
+#       liefert kaputte Factory-Images aus.
 merge_target esp32 esp32   4MB  0x3B0000  0x1000
 merge_target s3    esp32s3 16MB 0x610000  0x0
-merge_target c3    esp32c3 4MB  0x3B0000  0x0
-merge_target c6    esp32c6 4MB  0x3B0000  0x0
+merge_target c3    esp32c3 4MB  0x390000  0x0
+merge_target c6    esp32c6 4MB  0x390000  0x0
 
 # --- 3) Generate esp-web-tools manifest with current version -------------
 cat > "$OUT/manifest.json" <<EOF

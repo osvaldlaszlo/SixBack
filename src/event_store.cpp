@@ -4,6 +4,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <map>
+#include <vector>
 
 namespace sixback {
 namespace {
@@ -45,6 +46,7 @@ std::map<String, DeviceState>        g_devices;
 std::map<uint32_t, BodyAccumulator>  g_inflight;   // key: AsyncWebServerRequest*-cast
 SemaphoreHandle_t                    g_mtx = nullptr;
 EventStoreStats                      g_stats;
+PresetPressedCallback                g_presetPressedCb;
 
 void pushTrace(DeviceState& d, const String& type) {
     TraceEntry& e = d.trace[d.trace_head];
@@ -157,6 +159,12 @@ void ingestBody(const String& devIdHint, const String& body) {
     if (auto s = firstStr(devInfo, {"softwareVersion"})) d.now.sw_version = s;
     if (auto s = firstStr(devInfo, {"deviceType"}))      d.now.device_type = s;
 
+    // preset-pressed-Callbacks erst NACH dem Lock einsammeln und ausserhalb des
+    // Lock-Scopes feuern — Callback darf HTTP-Aufrufe machen (Spotify Web API),
+    // das wuerde mit g_mtx halten unausweichlich deadlocken.
+    struct PendingPress { int slot; String origin; };
+    std::vector<PendingPress> pendingPresses;
+
     size_t n_events = 0;
     if (!events.isNull()) {
         for (JsonVariantConst evt : events) {
@@ -168,18 +176,40 @@ void ingestBody(const String& devIdHint, const String& body) {
             applyEvent(d, t, data);
             pushTrace(d, t);
             n_events++;
+
+            if (t == "preset-pressed" && g_presetPressedCb) {
+                // Bose-Schema: data.buttonId="PRESET_N", data.origin="ir-remote"|"console"|"gabbo"
+                const char* bid = firstStr(data, {"buttonId"});
+                const char* org = firstStr(data, {"origin"});
+                int slot = 0;
+                if (bid && strncmp(bid, "PRESET_", 7) == 0) slot = atoi(bid + 7);
+                if (slot >= 1 && slot <= 6) {
+                    pendingPresses.push_back({slot, org ? String(org) : String("")});
+                }
+            }
         }
     }
     g_stats.events_ingested += (uint32_t)n_events;
     xSemaphoreGive(g_mtx);
 
     Serial.printf("[evt] %s: %u event(s)\n", devId.c_str(), (unsigned)n_events);
+
+    // Callbacks ausserhalb des Locks. devId ist lokale Kopie — sicher.
+    for (const auto& pp : pendingPresses) {
+        Serial.printf("[evt][preset] %s slot=%d origin=%s -> callback\n",
+                      devId.c_str(), pp.slot, pp.origin.c_str());
+        g_presetPressedCb(devId, pp.slot, pp.origin);
+    }
 }
 
 } // anon
 
 void eventStoreInit() {
     if (!g_mtx) g_mtx = xSemaphoreCreateMutex();
+}
+
+void eventStoreSetPresetPressedCallback(PresetPressedCallback cb) {
+    g_presetPressedCb = std::move(cb);
 }
 
 bool eventStoreIngestChunk(const String& deviceIdHint,
