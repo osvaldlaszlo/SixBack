@@ -72,15 +72,15 @@ echo ">>> SixBack release build, version=$VERSION"
 # again silently.
 #
 # Limits MUST stay in sync with the partition CSVs:
-#   partitions-4mb.csv      -> APP_4MB_SYM / FS_4MB_SYM   (esp32-classic)
-#   partitions-4mb-asym.csv -> APP_4MB_ASYM / FS_4MB_ASYM (c3 / c6, v0.7.7+)
-#   partitions.csv          -> APP_16MB / FS_16MB         (s3)
-APP_4MB_SYM=$((0x1D0000))   # 1.900.544 — app0/app1 in partitions-4mb.csv (esp32)
-FS_4MB_SYM=$((0x40000))     #   262.144 — spiffs   in partitions-4mb.csv
-APP_4MB_ASYM=$((0x280000))  # 2.621.440 — app0     in partitions-4mb-asym.csv (c3/c6)
-FS_4MB_ASYM=$((0x60000))    #   393.216 — spiffs   in partitions-4mb-asym.csv
-APP_16MB=$((0x300000))      # 3.145.728 — app0/app1 in partitions.csv (s3)
-FS_16MB=$((0x9E0000))       # 10.354.688 — spiffs   in partitions.csv
+#   partitions-4mb.csv       -> APP_4MB_SYM   / FS_4MB_SYM   (esp32-classic, OTA)
+#   partitions-4mb-noota.csv -> APP_4MB_NOOTA / FS_4MB_NOOTA (c3 / c6, v0.7.8+)
+#   partitions.csv           -> APP_16MB      / FS_16MB      (s3, OTA)
+APP_4MB_SYM=$((0x1D0000))    # 1.900.544 — app0/app1 in partitions-4mb.csv
+FS_4MB_SYM=$((0x40000))      #   262.144 — spiffs   in partitions-4mb.csv
+APP_4MB_NOOTA=$((0x380000))  # 3.670.016 — app     in partitions-4mb-noota.csv (c3/c6)
+FS_4MB_NOOTA=$((0x60000))    #   393.216 — spiffs  in partitions-4mb-noota.csv
+APP_16MB=$((0x300000))       # 3.145.728 — app0/app1 in partitions.csv (s3)
+FS_16MB=$((0x9E0000))        # 10.354.688 — spiffs in partitions.csv
 
 size_errors=0
 check_size() {
@@ -100,14 +100,14 @@ check_size() {
   fi
 }
 
-check_size "$PIO_BUILD/esp32/firmware.bin" $APP_4MB_SYM  "esp32 app"
-check_size "$PIO_BUILD/esp32/littlefs.bin" $FS_4MB_SYM   "esp32 fs"
-check_size "$PIO_BUILD/c3/firmware.bin"    $APP_4MB_ASYM "c3 app"
-check_size "$PIO_BUILD/c3/littlefs.bin"    $FS_4MB_ASYM  "c3 fs"
-check_size "$PIO_BUILD/c6/firmware.bin"    $APP_4MB_ASYM "c6 app"
-check_size "$PIO_BUILD/c6/littlefs.bin"    $FS_4MB_ASYM  "c6 fs"
-check_size "$PIO_BUILD/s3/firmware.bin"    $APP_16MB     "s3 app"
-check_size "$PIO_BUILD/s3/littlefs.bin"    $FS_16MB      "s3 fs"
+check_size "$PIO_BUILD/esp32/firmware.bin" $APP_4MB_SYM   "esp32 app"
+check_size "$PIO_BUILD/esp32/littlefs.bin" $FS_4MB_SYM    "esp32 fs"
+check_size "$PIO_BUILD/c3/firmware.bin"    $APP_4MB_NOOTA "c3 app"
+check_size "$PIO_BUILD/c3/littlefs.bin"    $FS_4MB_NOOTA  "c3 fs"
+check_size "$PIO_BUILD/c6/firmware.bin"    $APP_4MB_NOOTA "c6 app"
+check_size "$PIO_BUILD/c6/littlefs.bin"    $FS_4MB_NOOTA  "c6 fs"
+check_size "$PIO_BUILD/s3/firmware.bin"    $APP_16MB      "s3 app"
+check_size "$PIO_BUILD/s3/littlefs.bin"    $FS_16MB       "s3 fs"
 
 if [ "$size_errors" -gt 0 ]; then
   echo >&2
@@ -154,7 +154,7 @@ merge_target s3    esp32s3 16MB 0x610000  0x0
 merge_target c3    esp32c3 4MB  0x390000  0x0
 merge_target c6    esp32c6 4MB  0x390000  0x0
 
-# --- 3) Generate esp-web-tools manifest with current version -------------
+# --- 3a) Fresh-install manifest (full factory write + erase) -------------
 cat > "$OUT/manifest.json" <<EOF
 {
   "name": "SixBack",
@@ -190,10 +190,59 @@ cat > "$OUT/manifest.json" <<EOF
 }
 EOF
 
+# --- 3b) Update manifest (no erase; firmware + spiffs only, NVS bleibt) --
+# Beim Update-Manifest schreibt esp-web-tools nur die Parts an ihren
+# Offsets, OHNE vorher Flash zu erasen. NVS-Partition @ 0x9000 (WiFi-Creds,
+# Speaker-Inventory, Preset-Store, Spotify-Auth + Slot-Mappings) bleibt.
+#
+# Offsets MUESSEN zur Partition-Tabelle des jeweiligen Targets passen:
+#   esp32 / s3 / c3 / c6: app/app0 @ 0x10000
+#   esp32:                spiffs   @ 0x3B0000  (partitions-4mb.csv)
+#   s3:                   spiffs   @ 0x610000  (partitions.csv)
+#   c3 / c6:              spiffs   @ 0x390000  (partitions-4mb-noota.csv)
+cat > "$OUT/manifest-update.json" <<EOF
+{
+  "name": "SixBack (update)",
+  "version": "$VERSION",
+  "funding_url": "https://polyformproject.org/licenses/noncommercial/1.0.0/",
+  "new_install_prompt_erase": false,
+  "builds": [
+    {
+      "chipFamily": "ESP32",
+      "parts": [
+        { "path": "sixback-esp32-firmware.bin", "offset": 65536    },
+        { "path": "sixback-esp32-littlefs.bin", "offset": 3866624  }
+      ]
+    },
+    {
+      "chipFamily": "ESP32-S3",
+      "parts": [
+        { "path": "sixback-s3-firmware.bin",    "offset": 65536    },
+        { "path": "sixback-s3-littlefs.bin",    "offset": 6356992  }
+      ]
+    },
+    {
+      "chipFamily": "ESP32-C3",
+      "parts": [
+        { "path": "sixback-c3-firmware.bin",    "offset": 65536    },
+        { "path": "sixback-c3-littlefs.bin",    "offset": 3735552  }
+      ]
+    },
+    {
+      "chipFamily": "ESP32-C6",
+      "parts": [
+        { "path": "sixback-c6-firmware.bin",    "offset": 65536    },
+        { "path": "sixback-c6-littlefs.bin",    "offset": 3735552  }
+      ]
+    }
+  ]
+}
+EOF
+
 # --- 4) Summary -----------------------------------------------------------
 echo
 echo "=== Release artefacts (version $VERSION) ==="
-ls -lh "$OUT"/*.bin "$OUT"/manifest.json
+ls -lh "$OUT"/*.bin "$OUT"/manifest*.json
 echo
 echo "Public landing page:  https://install.busware.de/sixback/"
 echo "Deploy command (user triggers manually):"

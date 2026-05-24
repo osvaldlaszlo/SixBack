@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 #include "ota_pull.h"
 
+#ifdef SIXBACK_OTA_ENABLED
+
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <WiFi.h>
@@ -396,3 +398,30 @@ void init(const String& myVersion) {
 
 }  // namespace ota
 }  // namespace sixback
+
+#else // SIXBACK_OTA_ENABLED
+
+// No-op stubs damit api_endpoints/main weiterhin linken kann.
+// C3/C6: kein OTA-pull weil partition-Schema single-app (kein A/B-Slot).
+// Updates kommen via Web-Serial-Webflasher mit manifest-update.json.
+
+#include <Arduino.h>
+
+namespace sixback {
+namespace ota {
+
+void init(const String&) {}
+Status getStatus() {
+    Status s;
+    s.state = State::ERROR_;
+    s.error = "OTA disabled on this build — use Web-Serial-Updater";
+    return s;
+}
+void checkOnline() {}
+bool installOnlineAsync()      { return false; }
+bool installOnlineForceAsync() { return false; }
+
+} // namespace ota
+} // namespace sixback
+
+#endif // SIXBACK_OTA_ENABLED

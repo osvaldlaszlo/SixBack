@@ -1660,7 +1660,10 @@ void handleSelfReboot(AsyncWebServerRequest* req) {
 //   Beide multipart/octet-stream firmware upload, Reboot nach Finalize.
 //   Unterschied: Update.begin(..., U_FLASH) vs U_SPIFFS — bei arduino-esp32
 //   ist U_SPIFFS auch der Pfad fuer LittleFS (gleiche Partition).
+// Nur auf Builds mit SIXBACK_OTA_ENABLED (ESP32-classic + S3) — auf C3/C6
+// hat die partition keinen A/B-Slot, Update.h kann nicht schreiben.
 // -----------------------------------------------------------------------------
+#ifdef SIXBACK_OTA_ENABLED
 void handleOtaFinalize(AsyncWebServerRequest* req) {
     JsonDocument doc;
     doc["ok"]    = !Update.hasError();
@@ -1790,6 +1793,21 @@ void handleOtaUpdateInstall(AsyncWebServerRequest* req) {
 void handleOtaUpdateStatus(AsyncWebServerRequest* req) {
     writeOtaStatus_(req);
 }
+#else // SIXBACK_OTA_ENABLED
+// Single-app builds (c3/c6): /api/update/* returns 410 Gone with hint.
+void handleOtaUpdateCheck(AsyncWebServerRequest* req) {
+    req->send(410, "application/json",
+              "{\"error\":\"OTA disabled on this chip — use the Web-Serial Updater\","
+              "\"updater\":\"https://install.busware.de/sixback/\"}");
+}
+void handleOtaUpdateInstall(AsyncWebServerRequest* req) {
+    handleOtaUpdateCheck(req);
+}
+void handleOtaUpdateStatus(AsyncWebServerRequest* req) {
+    req->send(200, "application/json",
+              "{\"state\":\"disabled\",\"error\":\"OTA disabled on this chip — use the Web-Serial Updater\"}");
+}
+#endif // SIXBACK_OTA_ENABLED
 
 void handleRoot(AsyncWebServerRequest* req) {
     // index.html ist >100 KB; AsyncWebServer schafft das im uncompressed-Pfad
@@ -2286,6 +2304,7 @@ void registerApiEndpoints(AsyncWebServer& ui) {
     ui.on("^/api/spotify/last-trigger$",                   HTTP_GET,    handleSpotifyLastTrigger);
 #endif
 
+#ifdef SIXBACK_OTA_ENABLED
     // OTA — multipart upload. Mit ASYNCWEBSERVER_REGEX=1 binden plain
     // Path-Strings ohne `^...$` als Prefix — /api/ota wuerde dann auch
     // /api/ota/fs schlucken. Mit explizitem Anchor matched jede Route
@@ -2295,6 +2314,9 @@ void registerApiEndpoints(AsyncWebServer& ui) {
 
     // Online-Update — HTTPS-Pull von install.busware.de
     sixback::ota::init(String(FW_VERSION_STRING));
+#endif
+    // /api/update/* sind immer registriert — auf no-OTA-builds returnen
+    // sie HTTP 410 mit Hinweis auf Web-Serial-Webflasher.
     ui.on("/api/update/check",   HTTP_GET,  handleOtaUpdateCheck);
     ui.on("/api/update/install", HTTP_POST, handleOtaUpdateInstall);
     ui.on("/api/update/status",  HTTP_GET,  handleOtaUpdateStatus);
