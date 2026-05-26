@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
-// SixBack — Online-Update (HTTPS-Pull von install.busware.de)
+// SixBack — Online-Update (HTTPS-Pull von sixback.io)
 //
 // Im Geist von tul-knx-gateway: das Webfrontend triggert
 // /api/update/check und /api/update/install; der ESP zieht manifest.json

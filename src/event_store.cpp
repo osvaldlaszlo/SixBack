@@ -18,6 +18,9 @@ struct NowPlaying {
     String   play_state;    // PLAY, PAUSE, STOP, BUFFERING
     String   sw_version;    // softwareVersion aus deviceInfo
     String   device_type;   // SoundTouch 10, 20, 30, 300
+    String   location;      // ContentItem.location aus item-started (z.B.
+                            // "/v1/playback/station/sstrm2" — fuer Slot-
+                            // Highlight wenn title leer ist bei Streams)
     int      volume     = -1;
     uint32_t updated_ms = 0;
 };
@@ -94,6 +97,16 @@ void applyEvent(DeviceState& d, const String& type, JsonObjectConst data) {
             if (auto s = textField(np, "album"))    d.now.album   = s;
             if (auto s = textField(np, "art"))      d.now.art_url = s;
             if (auto s = firstStr(np, {"source"}))  d.now.source  = s;
+            // ContentItem.location fuer Slot-Highlight (Stream-Tunnel sstrm{N}
+            // hat oft leeren track, aber location matched zu slot.stationId).
+            JsonObjectConst ci = np["ContentItem"].as<JsonObjectConst>();
+            if (ci.isNull()) ci = np["contentItem"].as<JsonObjectConst>();
+            if (!ci.isNull()) {
+                if (auto s = firstStr(ci, {"location", "@location"})) d.now.location = s;
+            }
+            if (d.now.location.length() == 0) {
+                if (auto s = firstStr(np, {"stationLocation"})) d.now.location = s;
+            }
             // playStatus aus nowPlaying ist Backup falls play-state oben fehlt
             if (d.now.play_state.length() == 0) {
                 if (auto s = firstStr(np, {"playStatus"})) d.now.play_state = s;
@@ -138,6 +151,12 @@ void ingestBody(const String& devIdHint, const String& body) {
         return;
     }
 
+    // DEBUG: dump body wenn item-started drin ist, damit wir das ContentItem-
+    // Schema sehen koennen (location liegt vielleicht woanders als erwartet).
+    if (body.indexOf("item-started") >= 0) {
+        Serial.printf("[evt/dump-istarted] body=%s\n", body.c_str());
+    }
+
     JsonObjectConst envelope = doc["envelope"].as<JsonObjectConst>();
     JsonObjectConst payload  = doc["payload"].as<JsonObjectConst>();
     JsonObjectConst devInfo  = payload["deviceInfo"].as<JsonObjectConst>();
@@ -176,6 +195,7 @@ void ingestBody(const String& devIdHint, const String& body) {
             applyEvent(d, t, data);
             pushTrace(d, t);
             n_events++;
+            Serial.printf("[evt/diag] dev=%s type=%s\n", devId.c_str(), t.c_str());
 
             if (t == "preset-pressed" && g_presetPressedCb) {
                 // Bose-Schema: data.buttonId="PRESET_N", data.origin="ir-remote"|"console"|"gabbo"
@@ -185,6 +205,50 @@ void ingestBody(const String& devIdHint, const String& body) {
                 if (bid && strncmp(bid, "PRESET_", 7) == 0) slot = atoi(bid + 7);
                 if (slot >= 1 && slot <= 6) {
                     pendingPresses.push_back({slot, org ? String(org) : String("")});
+                }
+            }
+
+            // Sentinel-URL-Trigger (Workaround fuer Bose-FW die keine preset-pressed-
+            // Events bei Hardware-Press emittiert). Wenn ein item-started einen
+            // LIR-Stream mit URL sixback.io/silence.mp3?slot=N&dev=MAC startet,
+            // interpretieren wir das als logischen preset-press auf Slot N.
+            if (t == "item-started" && g_presetPressedCb) {
+                JsonObjectConst np = data["nowPlaying"].as<JsonObjectConst>();
+                if (!np.isNull()) {
+                    JsonObjectConst ci = np["ContentItem"].as<JsonObjectConst>();
+                    if (ci.isNull()) ci = np["contentItem"].as<JsonObjectConst>();
+                    const char* loc = nullptr;
+                    if (!ci.isNull()) loc = firstStr(ci, {"location", "@location"});
+                    if (!loc) loc = firstStr(np, {"stationLocation"});
+                    // Zwei Sentinel-Pfade:
+                    // (a) Direkter LIR-Stream URL sixback.io/silence?slot=N&...
+                    //     (broken in Bose-FW: LIR-Audio spielt nicht, kein
+                    //     item-started kommt). Trotzdem als Fallback parsen.
+                    // (b) TUNEIN-Tunnel: location=/v1/playback/station/sspotN
+                    //     (Bose pollt SixBack-Resolver, der liefert silence-URL,
+                    //     Bose spielt's ab + item-started fires mit der
+                    //     /v1/playback/station/sspot5-URL).
+                    int slot = 0;
+                    const char* matchedLoc = nullptr;
+                    if (loc) {
+                        if (strstr(loc, "sixback.io/silence")) {
+                            const char* sp = strstr(loc, "slot=");
+                            slot = sp ? atoi(sp + 5) : 0;
+                            matchedLoc = loc;
+                        } else if (strstr(loc, "/v1/playback/station/sspot")) {
+                            const char* sp = strstr(loc, "sspot");
+                            slot = sp ? atoi(sp + 5) : 0;
+                            matchedLoc = loc;
+                        }
+                    }
+                    if (slot >= 1 && slot <= 6) {
+                        Serial.printf("[evt][sentinel] dev=%s loc=%s -> slot=%d\n",
+                                      devId.c_str(), matchedLoc, slot);
+                        pendingPresses.push_back({slot, String("sentinel-url")});
+                    } else if (loc) {
+                        Serial.printf("[evt][item-started] dev=%s loc=%s (no sentinel match)\n",
+                                      devId.c_str(), loc);
+                    }
                 }
             }
         }
@@ -275,6 +339,7 @@ void eventStoreNowPlayingJson(const String& deviceId, JsonObject out) {
         out["art_url"]     = n.art_url;
         out["source"]      = n.source;
         out["play_state"]  = n.play_state;
+        out["location"]    = n.location;
         out["volume"]      = n.volume;
         out["sw_version"]  = n.sw_version;
         out["device_type"] = n.device_type;

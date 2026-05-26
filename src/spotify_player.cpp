@@ -8,6 +8,7 @@
 #include "speaker_inventory.h"
 
 #include <ArduinoJson.h>
+#include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <base64.h>
@@ -19,15 +20,18 @@ namespace sixback {
 namespace spotify {
 namespace {
 
-constexpr const char* kNvsNs       = "sixback-spot";
-constexpr const char* kNvsKeySlots = "slots";
-constexpr const char* kNvsKeyAuth  = "auth";
+constexpr const char* kNvsNs         = "sixback-spot";
+constexpr const char* kNvsKeySlots   = "slots";
+constexpr const char* kNvsKeyAuth    = "auth";
+constexpr const char* kNvsKeyAppCrd  = "appcr";   // App-Creds (clientId + clientSecret) — persistent über Disconnect
+constexpr const char* kNvsKeyLibrary = "library"; // Spotify-Library (Sidebar-Tiles)
 constexpr uint32_t    kDevCacheTtlMs    = 5 * 60 * 1000;  // 5 min — positive hits
 constexpr uint32_t    kDevCacheNegTtlMs = 30 * 1000;      // 30s — negative hits
                                                            // (kuerzer damit System schnell reagiert wenn User Speaker manuell in
                                                            // Spotify-App connected hat = Speaker erscheint dann in /devices)
 
 std::vector<SlotMapping>   g_slots;
+std::vector<LibraryItem>   g_library;
 SemaphoreHandle_t          g_mtx = nullptr;
 
 AuthState                  g_auth;
@@ -102,6 +106,8 @@ void loadFromNVS_() {
         m.slot        = o["slot"]                       | 0;
         m.spotifyUri  = (const char*)(o["spotifyUri"]  | "");
         m.displayName = (const char*)(o["displayName"] | "");
+        m.shuffle     = o["shuffle"]                    | false;
+        m.repeatMode  = (const char*)(o["repeatMode"]  | "off");
         if (m.deviceId.length() > 0 && m.slot >= 1 && m.slot <= 6
             && m.spotifyUri.length() > 0) {
             g_slots.push_back(m);
@@ -120,8 +126,74 @@ void saveToNVS_() {
         o["slot"]        = m.slot;
         o["spotifyUri"]  = m.spotifyUri;
         o["displayName"] = m.displayName;
+        o["shuffle"]     = m.shuffle;
+        o["repeatMode"]  = m.repeatMode;
     }
-    nvsSaveJson(kNvsNs, kNvsKeySlots, doc);
+    nvsSaveJsonWithCleanup(kNvsNs, kNvsKeySlots, doc);
+}
+
+void loadLibraryFromNVS_() {
+    JsonDocument doc;
+    if (!nvsLoadJson(kNvsNs, kNvsKeyLibrary, doc)) {
+        Serial.println("[spot] no NVS library, start empty");
+        return;
+    }
+    g_library.clear();
+    for (JsonObject o : doc["items"].as<JsonArray>()) {
+        LibraryItem it;
+        it.uri        = (const char*)(o["uri"]        | "");
+        it.name       = (const char*)(o["name"]       | "");
+        it.imageUrl   = (const char*)(o["imageUrl"]   | "");
+        it.shuffle    = o["shuffle"]                   | false;
+        it.repeatMode = (const char*)(o["repeatMode"] | "off");
+        if (it.uri.length() > 0) {
+            g_library.push_back(it);
+        }
+    }
+    Serial.printf("[spot] loaded %u library-items from NVS\n",
+                  (unsigned)g_library.size());
+}
+
+void saveLibraryToNVS_() {
+    JsonDocument doc;
+    JsonArray arr = doc["items"].to<JsonArray>();
+    for (const auto& it : g_library) {
+        JsonObject o = arr.add<JsonObject>();
+        o["uri"]        = it.uri;
+        o["name"]       = it.name;
+        o["imageUrl"]   = it.imageUrl;
+        o["shuffle"]    = it.shuffle;
+        o["repeatMode"] = it.repeatMode;
+    }
+    nvsSaveJsonWithCleanup(kNvsNs, kNvsKeyLibrary, doc);
+}
+
+// Beim Boot: wenn Library leer aber Slots haben Spotify-URIs → automatisch
+// jeden unique URI in die Library uebernehmen (mit den Slot-Anzeigedaten +
+// Shuffle/Repeat-Defaults). Damit kein "wo sind meine Tracks"-Schock nach
+// dem v0.7.11-Update. Erwartet g_mtx bereits gehalten.
+void migrateSlotsToLibrary_() {
+    if (!g_library.empty()) return;
+    if (g_slots.empty()) return;
+    for (const auto& s : g_slots) {
+        if (s.spotifyUri.length() == 0) continue;
+        bool already = false;
+        for (const auto& l : g_library) {
+            if (l.uri == s.spotifyUri) { already = true; break; }
+        }
+        if (already) continue;
+        LibraryItem it;
+        it.uri        = s.spotifyUri;
+        it.name       = s.displayName.length() > 0 ? s.displayName : s.spotifyUri;
+        it.shuffle    = s.shuffle;
+        it.repeatMode = s.repeatMode;
+        g_library.push_back(it);
+    }
+    if (!g_library.empty()) {
+        Serial.printf("[spot] migrated %u slot-uris into empty library\n",
+                      (unsigned)g_library.size());
+        saveLibraryToNVS_();
+    }
 }
 
 void loadAuthFromNVS_() {
@@ -136,12 +208,15 @@ void loadAuthFromNVS_() {
     g_auth.clientSecret       = (const char*)(doc["clientSecret"]       | "");
     g_auth.accessToken        = (const char*)(doc["accessToken"]        | "");
     g_auth.refreshToken       = (const char*)(doc["refreshToken"]       | "");
-    g_auth.expiresAtMs        = doc["expiresAtMs"]                       | (uint64_t)0;
+    // expiresAtMs aus NVS ist ein millis()-Wert vom letzten Boot — nach Reboot
+    // bedeutungslos (millis() ist nicht persistent). Auf 0 setzen erzwingt
+    // sofortigen Refresh über refreshToken beim ersten getValidAccessToken().
+    g_auth.expiresAtMs        = 0;
     g_auth.spotifyUserId      = (const char*)(doc["spotifyUserId"]      | "");
     g_auth.spotifyDisplayName = (const char*)(doc["spotifyDisplayName"] | "");
-    Serial.printf("[spot] loaded auth user=%s expires_in=%lld s\n",
-                  g_auth.spotifyUserId.c_str(),
-                  ((int64_t)g_auth.expiresAtMs - (int64_t)millis()) / 1000);
+    Serial.printf("[spot] loaded auth user=%s — accessToken markiert als expired "
+                  "(Boot-Reset), wird beim ersten Use refresht\n",
+                  g_auth.spotifyUserId.c_str());
 }
 
 void saveAuthToNVS_() {
@@ -153,7 +228,7 @@ void saveAuthToNVS_() {
     doc["expiresAtMs"]        = g_auth.expiresAtMs;
     doc["spotifyUserId"]      = g_auth.spotifyUserId;
     doc["spotifyDisplayName"] = g_auth.spotifyDisplayName;
-    nvsSaveJson(kNvsNs, kNvsKeyAuth, doc);
+    nvsSaveJsonWithCleanup(kNvsNs, kNvsKeyAuth, doc);
 }
 
 // POST https://accounts.spotify.com/api/token mit grant_type=refresh_token.
@@ -193,12 +268,20 @@ bool doTokenRefresh_() {
             Serial.printf("[spot] refresh retry %d (last code=%d)\n", attempt, code);
             vTaskDelay(pdMS_TO_TICKS(500));
         }
+        // Fresh local TLS pro Versuch (vorher: persistente g_tlsAccounts mit
+        // setReuse(true)). Empirisch 2026-05-26 auf S3 fuehrte das persistente
+        // Pattern zu mbedtls_ssl_setup-Alloc-Fail (-32512) selbst bei freiem
+        // Heap > 50KB — Fragmentation der internen RAM. Fresh local + sofortiges
+        // http.end() laesst mbedtls die ~32KB SSL-Buffer pro Call frei und neu
+        // anfordern; das funktioniert konsistenter als Connection-Reuse.
+        WiFiClientSecure tls;
+        tls.setInsecure();
+        tls.setTimeout(8);
         HTTPClient http;
-        if (!http.begin(*g_tlsAccounts, "https://accounts.spotify.com/api/token")) {
+        if (!http.begin(tls, "https://accounts.spotify.com/api/token")) {
             Serial.println("[spot] refresh begin failed");
             continue;
         }
-        http.setReuse(true);
         http.addHeader("Authorization",  basic);
         http.addHeader("Content-Type",   "application/x-www-form-urlencoded");
         http.setTimeout(8000);
@@ -246,22 +329,53 @@ bool doTokenRefresh_() {
 
 } // anon
 
+// Forward-Declaration für den persistenten Worker.
+namespace { void workerTask_(void* arg); }
+static QueueHandle_t g_pressQueue = nullptr;
+
 void init() {
     ensureMutex_();
     ensureTlsClients_();   // Eager-init: TLS-Heap-Allokation bei Boot, nicht
                            // im Trigger-Context (vermeidet Fragmentation-Spikes).
     if (xSemaphoreTake(g_mtx, pdMS_TO_TICKS(200)) == pdTRUE) {
         loadFromNVS_();
+        loadLibraryFromNVS_();
+        migrateSlotsToLibrary_();
         xSemaphoreGive(g_mtx);
     }
     eventStoreSetPresetPressedCallback(onPresetPressed);
-    Serial.println("[spot] init done — preset-pressed callback registered, TLS-clients ready");
+
+    // Persistenter Worker-Task am Boot starten (statt xTaskCreate-per-press).
+    // Empirisch: frisch-erzeugte Tasks haben HTTPS-Connection-Probleme (HTTP -1
+    // in 50ms), permanent-laufende Tasks (Marge-keepalive etc.) machen LAN-HTTP
+    // ohne Issue. Hypothese: irgendein TLS/lwIP-Init geschieht beim FIRST
+    // network access einer Task; one-shot-Tasks haben dafür nicht genug Zeit.
+    // Long-lived Worker macht dummy-Init im 1st Cycle.
+    if (g_pressQueue == nullptr) {
+        g_pressQueue = xQueueCreate(8, sizeof(void*));
+#if CONFIG_FREERTOS_UNICORE || !defined(APP_CPU_NUM)
+        // Single-core (C3/C6 RISC-V): kein APP_CPU_NUM, nutze PRO_CPU_NUM.
+        const BaseType_t targetCore = PRO_CPU_NUM;
+#else
+        const BaseType_t targetCore = APP_CPU_NUM;
+#endif
+        xTaskCreatePinnedToCore(
+            workerTask_, "spot-worker",
+            12288, nullptr, tskIDLE_PRIORITY + 1, nullptr,
+            targetCore);
+    }
+
+    Serial.println("[spot] init done — preset-pressed callback registered, TLS-clients ready, worker spawned");
 }
 
 void setSlot(const String& deviceId, int slot, const String& uri,
-             const String& displayName) {
+             const String& displayName,
+             bool shuffle, const String& repeatMode) {
     ensureMutex_();
     if (slot < 1 || slot > 6) return;
+    // repeatMode-Validierung an der Grenze, falls jemand Garbage uebergibt.
+    String rm = repeatMode;
+    if (rm != "off" && rm != "track" && rm != "context") rm = "off";
     if (xSemaphoreTake(g_mtx, pdMS_TO_TICKS(200)) != pdTRUE) return;
     // existing entry replace; if uri empty, delete
     auto it = g_slots.begin();
@@ -278,13 +392,16 @@ void setSlot(const String& deviceId, int slot, const String& uri,
         m.slot        = slot;
         m.spotifyUri  = uri;
         m.displayName = displayName;
+        m.shuffle     = shuffle;
+        m.repeatMode  = rm;
         g_slots.push_back(m);
     }
     saveToNVS_();
     xSemaphoreGive(g_mtx);
-    Serial.printf("[spot] setSlot dev=%s slot=%d uri=%s%s\n",
+    Serial.printf("[spot] setSlot dev=%s slot=%d uri=%s shuf=%d rep=%s%s\n",
                   deviceId.c_str(), slot,
                   uri.length() > 0 ? uri.c_str() : "(cleared)",
+                  shuffle ? 1 : 0, rm.c_str(),
                   uri.length() > 0 ? "" : " (slot will be empty on speaker)");
 }
 
@@ -311,6 +428,81 @@ std::vector<SlotMapping> listSlots() {
         xSemaphoreGive(g_mtx);
     }
     return copy;
+}
+
+// -----------------------------------------------------------------------------
+// Library-API
+// -----------------------------------------------------------------------------
+
+bool addLibraryItem(const LibraryItem& item) {
+    ensureMutex_();
+    if (item.uri.length() == 0) return false;
+    String rm = item.repeatMode;
+    if (rm != "off" && rm != "track" && rm != "context") rm = "off";
+    bool created = true;
+    if (xSemaphoreTake(g_mtx, pdMS_TO_TICKS(200)) != pdTRUE) return false;
+    for (auto& l : g_library) {
+        if (l.uri == item.uri) {
+            l.name       = item.name;
+            l.imageUrl   = item.imageUrl;
+            l.shuffle    = item.shuffle;
+            l.repeatMode = rm;
+            created = false;
+            break;
+        }
+    }
+    if (created) {
+        LibraryItem nit = item;
+        nit.repeatMode = rm;
+        g_library.push_back(nit);
+    }
+    saveLibraryToNVS_();
+    xSemaphoreGive(g_mtx);
+    Serial.printf("[spot] library %s uri=%s name=%s shuf=%d rep=%s\n",
+                  created ? "add" : "upd", item.uri.c_str(),
+                  item.name.c_str(), item.shuffle ? 1 : 0, rm.c_str());
+    return created;
+}
+
+bool removeLibraryItem(const String& uri) {
+    ensureMutex_();
+    if (uri.length() == 0) return false;
+    bool removed = false;
+    if (xSemaphoreTake(g_mtx, pdMS_TO_TICKS(200)) != pdTRUE) return false;
+    for (auto it = g_library.begin(); it != g_library.end(); ) {
+        if (it->uri == uri) {
+            it = g_library.erase(it);
+            removed = true;
+        } else {
+            ++it;
+        }
+    }
+    if (removed) saveLibraryToNVS_();
+    xSemaphoreGive(g_mtx);
+    if (removed) Serial.printf("[spot] library rm uri=%s\n", uri.c_str());
+    return removed;
+}
+
+std::vector<LibraryItem> listLibrary() {
+    ensureMutex_();
+    std::vector<LibraryItem> copy;
+    if (xSemaphoreTake(g_mtx, pdMS_TO_TICKS(200)) == pdTRUE) {
+        copy = g_library;
+        xSemaphoreGive(g_mtx);
+    }
+    return copy;
+}
+
+bool getLibraryItem(const String& uri, LibraryItem& out) {
+    ensureMutex_();
+    if (uri.length() == 0) return false;
+    if (xSemaphoreTake(g_mtx, pdMS_TO_TICKS(200)) != pdTRUE) return false;
+    bool found = false;
+    for (const auto& l : g_library) {
+        if (l.uri == uri) { out = l; found = true; break; }
+    }
+    xSemaphoreGive(g_mtx);
+    return found;
 }
 
 // -----------------------------------------------------------------------------
@@ -343,6 +535,32 @@ AuthState getAuth() {
 bool isAuthConfigured() {
     auto s = getAuth();
     return s.clientId.length() > 0 && s.refreshToken.length() > 0;
+}
+
+// ----- App-Credentials (separat von Tokens persistiert) ---------------------
+
+void setAppCreds(const AppCreds& c) {
+    JsonDocument doc;
+    doc["clientId"]     = c.clientId;
+    doc["clientSecret"] = c.clientSecret;
+    nvsSaveJsonWithCleanup(kNvsNs, kNvsKeyAppCrd, doc);
+    Serial.printf("[spot] setAppCreds clientId=%s (len=%u) secret_len=%u\n",
+                  c.clientId.c_str(), (unsigned)c.clientId.length(),
+                  (unsigned)c.clientSecret.length());
+}
+
+AppCreds getAppCreds() {
+    AppCreds out;
+    JsonDocument doc;
+    if (!nvsLoadJson(kNvsNs, kNvsKeyAppCrd, doc)) return out;
+    out.clientId     = (const char*)(doc["clientId"]     | "");
+    out.clientSecret = (const char*)(doc["clientSecret"] | "");
+    return out;
+}
+
+bool hasAppCreds() {
+    auto c = getAppCreds();
+    return c.clientId.length() > 0 && c.clientSecret.length() > 0;
 }
 
 String getValidAccessToken() {
@@ -395,18 +613,36 @@ String lookupSpotifyDeviceId(const String& speakerName) {
     String tok = getValidAccessToken();
     if (tok.length() == 0) return "";
 
-    ensureTlsClients_();
+    // Fresh local WiFiClientSecure pro Call — Singleton g_tlsApi liefert
+    // empirisch HTTP -1 unter ungeklärten Bedingungen (vermutlich
+    // BearSSL-Internal-State-Corruption), während fresh local immer klappt.
+    // Heap-Kost ~30 KB transient pro Call; bei seltenen Presets akzeptabel.
+    // Mutex hält serialize damit nicht 2 parallel TLS-Handshakes laufen.
+    Serial.printf("[spot/diag] devLookup pre-mtx tok_len=%u wifi_rssi=%d free_heap=%u largest_free_internal=%u\n",
+                  (unsigned)tok.length(), WiFi.RSSI(), ESP.getFreeHeap(),
+                  heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
     if (xSemaphoreTake(g_tlsMtx, pdMS_TO_TICKS(15000)) != pdTRUE) return "";
+    Serial.println("[spot/diag] mtx acquired");
+    WiFiClientSecure tls;
+    tls.setInsecure();
+    tls.setTimeout(8);
     HTTPClient http;
-    if (!http.begin(*g_tlsApi, "https://api.spotify.com/v1/me/player/devices")) {
+    bool beginOk = http.begin(tls, "https://api.spotify.com/v1/me/player/devices");
+    Serial.printf("[spot/diag] http.begin -> %d (free_heap=%u)\n", (int)beginOk, ESP.getFreeHeap());
+    if (!beginOk) {
         xSemaphoreGive(g_tlsMtx);
         return "";
     }
-    http.setReuse(true);
     http.addHeader("Authorization", "Bearer " + tok);
     http.setTimeout(8000);
+    uint32_t t0 = millis();
     int code = http.GET();
+    uint32_t dt = millis() - t0;
+    Serial.printf("[spot/diag] http.GET -> %d in %u ms (free_heap=%u)\n",
+                  code, dt, ESP.getFreeHeap());
     String resp = http.getString();
+    Serial.printf("[spot/diag] body_len=%u (first 100 chars: %s)\n",
+                  (unsigned)resp.length(), resp.substring(0, 100).c_str());
     http.end();
     xSemaphoreGive(g_tlsMtx);
     if (code != 200) {
@@ -437,9 +673,8 @@ String lookupSpotifyDeviceId(const String& speakerName) {
         Serial.printf("[spot] devLookup %s -> %s (cached %d ms)\n",
                       speakerName.c_str(), matchId.c_str(), kDevCacheTtlMs);
     } else {
-        Serial.printf("[spot] devLookup %s -> NOT FOUND in Spotify devices "
-                      "(speaker must be paired manually in Spotify app first)\n",
-                      speakerName.c_str());
+        Serial.printf("[spot] devLookup %s -> NOT FOUND. Spotify /devices raw body=%s\n",
+                      speakerName.c_str(), resp.substring(0, 600).c_str());
     }
     return matchId;
 }
@@ -477,11 +712,15 @@ String urlEncode_(const String& in) {
 // OAuth Authorization-Code Flow
 // -----------------------------------------------------------------------------
 
-String genAuthUrl(const String& clientId, const String& redirectUri) {
+String genAuthUrl(const String& clientId, const String& redirectUri,
+                  const String& state) {
     String url = "https://accounts.spotify.com/authorize?";
     url += "client_id=" + urlEncode_(clientId);
     url += "&response_type=code";
     url += "&redirect_uri=" + urlEncode_(redirectUri);
+    if (state.length() > 0) {
+        url += "&state=" + urlEncode_(state);
+    }
     url += "&scope=" + urlEncode_(
         "user-read-playback-state user-modify-playback-state "
         "user-read-currently-playing user-read-email");
@@ -491,14 +730,15 @@ String genAuthUrl(const String& clientId, const String& redirectUri) {
 bool fetchUserInfo(String& userIdOut, String& displayNameOut) {
     String tok = getValidAccessToken();
     if (tok.length() == 0) return false;
-    ensureTlsClients_();
     if (xSemaphoreTake(g_tlsMtx, pdMS_TO_TICKS(15000)) != pdTRUE) return false;
+    WiFiClientSecure tls;
+    tls.setInsecure();
+    tls.setTimeout(8);
     HTTPClient http;
-    if (!http.begin(*g_tlsApi, "https://api.spotify.com/v1/me")) {
+    if (!http.begin(tls, "https://api.spotify.com/v1/me")) {
         xSemaphoreGive(g_tlsMtx);
         return false;
     }
-    http.setReuse(true);
     http.addHeader("Authorization", "Bearer " + tok);
     http.setTimeout(8000);
     int code = http.GET();
@@ -569,6 +809,11 @@ bool exchangeAuthCode(const String& code,
     s.accessToken   = access;
     s.refreshToken  = refresh;
     s.expiresAtMs   = (uint64_t)millis() + (uint64_t)expSec * 1000;
+    // App-Creds parallel persistieren — überleben Disconnect.
+    AppCreds appc;
+    appc.clientId     = clientId;
+    appc.clientSecret = clientSecret;
+    setAppCreds(appc);
     // /v1/me Fetch — Best-Effort, fail-non-fatal.
     setAuth(s);
     String userId, displayName;
@@ -616,26 +861,26 @@ bool playOnDevice(const String& spotifyDeviceId, const String& contextUri) {
     String tok = getValidAccessToken();
     if (tok.length() == 0) return false;
 
-    ensureTlsClients_();
+    // Fresh local TLS pro Call — siehe lookupSpotifyDeviceId-Kommentar.
     if (xSemaphoreTake(g_tlsMtx, pdMS_TO_TICKS(15000)) != pdTRUE) return false;
-    HTTPClient http;
     String url = "https://api.spotify.com/v1/me/player/play?device_id=" + spotifyDeviceId;
-    if (!http.begin(*g_tlsApi, url)) {
-        xSemaphoreGive(g_tlsMtx);
-        return false;
-    }
-    http.setReuse(true);
-    http.addHeader("Authorization", "Bearer " + tok);
-    http.addHeader("Content-Type",  "application/json");
-    http.setTimeout(8000);
-    // Tracks brauchen das "uris"-Schema, Playlists/Alben das "context_uri"-Schema
-    // (Spotify Web API Spec). spotify:track:XXX -> uris-Array, alles andere -> context_uri.
     String body;
     if (contextUri.startsWith("spotify:track:")) {
         body = "{\"uris\":[\"" + contextUri + "\"]}";
     } else {
         body = "{\"context_uri\":\"" + contextUri + "\"}";
     }
+    WiFiClientSecure tls;
+    tls.setInsecure();
+    tls.setTimeout(8);
+    HTTPClient http;
+    if (!http.begin(tls, url)) {
+        xSemaphoreGive(g_tlsMtx);
+        return false;
+    }
+    http.addHeader("Authorization", "Bearer " + tok);
+    http.addHeader("Content-Type",  "application/json");
+    http.setTimeout(8000);
     int code = http.PUT(body);
     bool ok = (code == 204 || code == 202);
     String resp = ok ? String() : http.getString();
@@ -735,21 +980,63 @@ void triggerWorker_(const String& deviceId, int slot, const String& origin) {
         pushTrigLog_(log);
         return;
     }
-    ensureTlsClients_();
+
+    // Lambda fuer einfache PUT-Calls (shuffle, repeat) — kein body, kein
+    // response-handling ausser HTTP-Code. Nutzt fresh local TLS pro Call wie
+    // /play unten. Macht die Pre-Play-Modi sequenziell innerhalb des g_tlsMtx
+    // Locks gleich nebenan.
+    auto putWebApi = [&](const String& url) -> int {
+        WiFiClientSecure tls;
+        tls.setInsecure();
+        tls.setTimeout(6);
+        HTTPClient http;
+        if (!http.begin(tls, url)) return -1;
+        http.addHeader("Authorization", "Bearer " + tok);
+        http.addHeader("Content-Length", "0");
+        http.setTimeout(6000);
+        int c = http.PUT("");
+        http.end();
+        return c;
+    };
+
     if (xSemaphoreTake(g_tlsMtx, pdMS_TO_TICKS(15000)) != pdTRUE) {
         log.result = "tls-busy";
         pushTrigLog_(log);
         return;
     }
+    // Pre-Play: shuffle + repeat setzen. Spotify uebernimmt sonst den vorigen
+    // Mode des Players, was bei einem "Pink-Floyd-Album"-Slot mit aktivem
+    // shuffle vom letzten Slot zu durcheinandergeworfener Track-Order fuehrt.
+    // Beide Calls sind ~200ms each. Fehler werden geloggt aber nicht abgebrochen
+    // — der /play unten ist die einzig wirklich kritische Operation.
+    {
+        String shuf = "https://api.spotify.com/v1/me/player/shuffle?state=";
+        shuf += (m.shuffle ? "true" : "false");
+        shuf += "&device_id=" + spotifyDeviceId;
+        int sc = putWebApi(shuf);
+        if (sc != 204 && sc != 202) {
+            Serial.printf("[spot] /shuffle HTTP %d (continuing)\n", sc);
+        }
+        String rep = "https://api.spotify.com/v1/me/player/repeat?state=";
+        rep += m.repeatMode;  // "off"|"track"|"context", validiert in setSlot
+        rep += "&device_id=" + spotifyDeviceId;
+        int rc = putWebApi(rep);
+        if (rc != 204 && rc != 202) {
+            Serial.printf("[spot] /repeat HTTP %d (continuing)\n", rc);
+        }
+    }
+
+    WiFiClientSecure tls;
+    tls.setInsecure();
+    tls.setTimeout(8);
     HTTPClient http;
     String url = "https://api.spotify.com/v1/me/player/play?device_id=" + spotifyDeviceId;
-    if (!http.begin(*g_tlsApi, url)) {
+    if (!http.begin(tls, url)) {
         xSemaphoreGive(g_tlsMtx);
         log.result = "play-begin-failed";
         pushTrigLog_(log);
         return;
     }
-    http.setReuse(true);
     http.addHeader("Authorization", "Bearer " + tok);
     http.addHeader("Content-Type",  "application/json");
     http.setTimeout(8000);
@@ -784,25 +1071,55 @@ void triggerTaskEntry_(void* arg) {
     delete job;
     vTaskDelete(nullptr);
 }
+
+// Long-lived Worker: hängt an g_pressQueue, dequeues Jobs sequenziell.
+// Vorteil: TLS/lwIP-Init nur 1× beim Task-Boot, nicht per Press.
+void workerTask_(void* /*arg*/) {
+    Serial.println("[spot/worker] running");
+    while (true) {
+        PressJob* job = nullptr;
+        if (xQueueReceive(g_pressQueue, &job, portMAX_DELAY) == pdTRUE && job) {
+            triggerWorker_(job->deviceId, job->slot, job->origin);
+            delete job;
+        }
+    }
+}
 } // anon
 
 void onPresetPressed(const String& deviceId, int slot, const String& origin) {
-    // Kein Inline-Work — alles in einer kurzlebigen Task, sonst blockt der
-    // AsyncWebServer-Event-Loop fuer Sekunden waehrend HTTPS-Calls.
-    PressJob* job = new PressJob{deviceId, slot, origin};
-    BaseType_t ok = xTaskCreate(
-        triggerTaskEntry_,
-        "spot-trig",
-        24576,           // 24 KB — WiFiClientSecure/BearSSL TLS-Handshake braucht
-                         // ~20 KB. Mit 8K knallt der Stack-Pointer durch und
-                         // HTTPClient.PUT returnt -1 ohne sichtbaren Crash.
-        job,
-        tskIDLE_PRIORITY + 1,
-        nullptr);
-    if (ok != pdPASS) {
-        Serial.println("[spot][TRIGGER] xTaskCreate failed — dropped");
-        delete job;
+    // Dispatch via localhost-HTTP-Loopback ans UI-Server (Port 80) damit der
+    // Trigger im UI-AsyncWebServer-handler-Thread läuft. Empirisch verifiziert:
+    //   • UI-handler-Thread: HTTPS klappt (probe-api, simulate)
+    //   • BMX-SCMUDC-handler-Thread: HTTPS schlägt fehl (refresh -1, devices -1)
+    //   • xTaskCreate-Tasks: HTTPS schlägt fehl (alle Versuche)
+    // → UI-Handler ist der einzig funktionierende Context. Plain-HTTP-POST zu
+    // localhost dispatcht synchron, blockiert BMX-handler nur 1-5ms (LAN-HTTP).
+    // UI-handler übernimmt dann den HTTPS-Trigger.
+    if (!isAuthConfigured()) {
+        Serial.printf("[spot][TRIGGER] dev=%s slot=%d (origin=%s) — no auth, skip\n",
+                      deviceId.c_str(), slot, origin.c_str());
+        return;
     }
+    // Wenn wir bereits aus dem UI-Handler-Context kommen (simulate-Endpoint),
+    // direkt inline triggern — Dispatch wäre Recursion.
+    if (origin == "ui-simulate") {
+        triggerWorker_(deviceId, slot, origin);
+        return;
+    }
+    // Aus BMX-SCMUDC-Handler-Context: HTTPS scheitert hier (siehe Diag).
+    // Dispatch via localhost-HTTP-Loopback an UI-Server damit Trigger im
+    // UI-AsyncWebServer-handler-Thread läuft (dort funktioniert HTTPS).
+    HTTPClient http;
+    String url = "http://127.0.0.1/api/spotify/simulate/" + deviceId + "/" + String(slot);
+    if (!http.begin(url)) {
+        Serial.println("[spot] dispatch http.begin fail");
+        return;
+    }
+    http.setTimeout(3000);
+    int code = http.POST("");
+    http.end();
+    Serial.printf("[spot] dispatch %s slot=%d -> HTTP %d\n",
+                  deviceId.c_str(), slot, code);
 }
 
 } // namespace spotify
@@ -822,9 +1139,14 @@ namespace spotify {
 void init() {
     Serial.println("[spot] disabled in this build (SIXBACK_SPOTIFY_ENABLED undef)");
 }
-void setSlot(const String&, int, const String&, const String&) {}
+void setSlot(const String&, int, const String&, const String&,
+             bool, const String&) {}
 bool getSlot(const String&, int, SlotMapping&) { return false; }
 std::vector<SlotMapping> listSlots() { return {}; }
+bool addLibraryItem(const LibraryItem&) { return false; }
+bool removeLibraryItem(const String&) { return false; }
+std::vector<LibraryItem> listLibrary() { return {}; }
+bool getLibraryItem(const String&, LibraryItem&) { return false; }
 void onPresetPressed(const String&, int, const String&) {}
 void setAuth(const AuthState&) {}
 AuthState getAuth() { return {}; }
@@ -832,7 +1154,7 @@ bool isAuthConfigured() { return false; }
 String getValidAccessToken() { return ""; }
 String lookupSpotifyDeviceId(const String&) { return ""; }
 bool playOnDevice(const String&, const String&) { return false; }
-String genAuthUrl(const String&, const String&) { return ""; }
+String genAuthUrl(const String&, const String&, const String&) { return ""; }
 bool exchangeAuthCode(const String&, const String&, const String&,
                       const String&, String& err) { err = "spotify-disabled"; return false; }
 bool fetchUserInfo(String&, String&) { return false; }

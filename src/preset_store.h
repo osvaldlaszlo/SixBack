@@ -68,7 +68,7 @@ public:
     };
 
     void loadFromNVS();
-    void saveToNVS();
+    bool saveToNVS();  // true = NVS-Commit erfolgreich; false = Partition voll/fragmentiert
 
     // Lese alle 6 Slots fuer einen Speaker; leere Slots haben source=EMPTY.
     std::vector<Preset> getForSpeaker(const String& deviceId);

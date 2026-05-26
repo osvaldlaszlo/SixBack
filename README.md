@@ -42,7 +42,7 @@ No subscription, no account, no Bose servers.  One USB stick on your LAN.
 | **IP-Failsafe** — auto-remigrate on ESP-IP change, with pre-probe    | working — skips speakers already on the new base                                                                   |
 | **SETTLING status** (v0.6.541)                                       | working — backend reports `settling` instead of `offline` when only Telnet:17000 is down but BMX:8090 still answers |
 | Preset UI — drag&drop, dual-row (HW vs Store), per-slot revert       | working — modal progress, per-speaker export/import, refresh discards unsaved (v0.7.3)                             |
-| Diagnostic snapshot (v0.6.0)                                         | working — `GET /api/speaker/{id}/diagnostic-snapshot` + one-shot pre-migrate snapshot persisted to `/snapshots/{deviceId}.json`; WebUI download or "Send to maintainer" upload to `install.busware.de/sixback/snapshot` |
+| Diagnostic snapshot (v0.6.0)                                         | working — `GET /api/speaker/{id}/diagnostic-snapshot` + one-shot pre-migrate snapshot persisted to `/snapshots/{deviceId}.json`; WebUI download or "Send to maintainer" upload to `sixback.io/snapshots/bosefix/snapshot` |
 | OTA — app & LittleFS                                                 | working — `UPDATE_SIZE_UNKNOWN` + stream-to-EOF + 90% sanity-abort (v0.7.0 fix for HTTPS Content-Length truncation) |
 | **Tag-based release versioning** (v0.7.6)                            | working — `RELEASE_TAG` env bakes the same version string into all four target firmwares; eliminates multi-target build-drift |
 | **Build size-gate** (v0.7.5)                                         | working — `build_release.sh` aborts if any firmware or LittleFS image exceeds its partition slot                   |
@@ -51,13 +51,13 @@ No subscription, no account, no Bose servers.  One USB stick on your LAN.
 | **ESP32-C6 WPA2 reliability**                                        | working — `WiFi.setSleep(WIFI_PS_NONE)` + `setAutoReconnect(true)` applied **before** `WiFi.begin()`; closes 4-Way-Handshake-Timeout on WPA2-Mixed APs |
 | System health — Task-WDT, WiFi / heap watchdog, crash counter, self-ping | working                                                                                                        |
 | Builds for **ESP32 / ESP32-S3 ★ / ESP32-C3 / ESP32-C6**              | working — S3 is the recommended target                                                                             |
-| ESP-Web-Tools landing page (auto-detects chip)                       | working — <https://install.busware.de/sixback/>                                                                    |
+| ESP-Web-Tools landing page (auto-detects chip)                       | working — <https://sixback.io/>                                                                                    |
 
 ## Install (recommended)
 
 Open the **web flasher** in Chrome or Edge desktop and click *Connect*:
 
-> 🔗 **<https://install.busware.de/sixback/>**
+> 🔗 **<https://sixback.io/>**
 
 The page reads [`webflasher/manifest.json`](webflasher/manifest.json),
 detects the chip family of the connected board, and writes the matching

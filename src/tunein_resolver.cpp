@@ -2,6 +2,7 @@
 #include "tunein_resolver.h"
 #include "nvs_helper.h"
 #include "preset_store.h"
+#include "config.h"
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
 #include <WiFi.h>
@@ -143,6 +144,14 @@ bool findPresetOverride(const String& id, String& url, String& name, String& ima
     url   = p.streamUrl;
     name  = p.name;
     image = p.imageUrl;
+    // Spotify-Tunnel-Sentinel (sspot1..sspot6) braucht eine TLS-freie streamUrl,
+    // weil Bose-FW (2021) das Cloudflare-Cert von sixback.io nicht validiert
+    // (INVALID_SOURCE-State, long-press persistiert dann nichts). Lokal vom
+    // ESP serven, HTTP only — funktioniert unabhaengig von der Stored-URL.
+    if (id.startsWith("sspot")) {
+        url = "http://" + WiFi.localIP().toString() + ":" + String(BOSE_HTTP_PORT)
+            + "/silence.mp3";
+    }
     return true;
 }
 

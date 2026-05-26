@@ -19,6 +19,16 @@ bool nvsSaveJson(const char* ns, const char* key, JsonDocument& doc);
 // Loescht einen Key.
 bool nvsErase(const char* ns, const char* key);
 
+// Eraset ALLE keys eines Namespaces.
+bool nvsEraseAllInNamespace(const char* ns);
+
+// Liefert NVS-Stats fuer die Default-Partition als JSON.
+void nvsGetStatsJson(JsonDocument& out);
+
+// Try-Save mit Auto-Cleanup-Fallback. Wenn putString fail (NVS voll),
+// werden Cache-Namespaces erased + retried. Returns true bei Erfolg.
+bool nvsSaveJsonWithCleanup(const char* ns, const char* key, JsonDocument& doc);
+
 // Einmalige Daten-Migration BoseFix32 -> SixBack.
 // Kopiert alle Keys (STR, U8, U16, U32, U64, I8, I16, I32, I64, BLOB) von
 // `oldNs` nach `newNs`, falls `newNs` noch leer ist. Nach erfolgreicher

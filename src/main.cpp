@@ -31,6 +31,7 @@
 #include "auto_mode.h"
 #include "nvs_helper.h"
 #include "marge_keepalive.h"
+#include "mbedtls_psram_alloc.h"
 
 static AsyncWebServer boseServer(BOSE_HTTP_PORT);
 static AsyncWebServer uiServer(UI_HTTP_PORT);
@@ -112,6 +113,10 @@ void setup() {
     Serial.begin(115200);
     delay(500);
     banner();
+
+    // mbedtls auf PSRAM umlenken BEVOR irgendwas TLS spricht. Loest -32512
+    // (SSL_MEMORY_ALLOC_FAILED) auf Sticks mit min_free < 32KB.
+    sixback::installPsramMbedtlsAllocator();
 
     mountFS();
     // BoseFix32 -> SixBack: einmalige NVS-Daten-Migration VOR jedem

@@ -220,15 +220,61 @@ bool isEligible_(const Speaker& s, const String& myBase) {
     bool fwOk = s.firmware.indexOf("27.0.6.") >= 0
              || s.firmware.indexOf("27.0.3.") >= 0;
     if (!fwOk) return false;
+    // Defensive: cloudUrl noch leer nach JIT-Resolve im Tick-Pre-Step =
+    // Telnet:17000 unreachable. Migration scheitert spaeter an der
+    // configure-Phase ohnehin — skip statt try-and-fail (vermeidet
+    // "preset import failed"-Spam wenn Speaker am Boot grade settled).
+    // Eliminiert die Race wo isPeerSixBackCloud_ wegen leerem cloudUrl
+    // gar nicht gefragt wird → false-positive "eligible".
+    if (s.cloudUrl.length() == 0) {
+        Serial.printf("[auto] skip %s (%s): cloudUrl unknown (telnet probe failed)\n",
+                      s.name.c_str(), s.ip.c_str());
+        return false;
+    }
     // Peer-aware (v0.7.5): wenn cloudUrl auf einen anderen SixBack-Stick
     // im LAN zeigt, nicht zurueckclaimen.
-    if (s.cloudUrl.length() > 0 && s.cloudUrl != myBase &&
-        isPeerSixBackCloud_(s.cloudUrl)) {
+    if (s.cloudUrl != myBase && isPeerSixBackCloud_(s.cloudUrl)) {
         Serial.printf("[auto] skip %s (%s): peer SixBack at %s already owns it\n",
                       s.name.c_str(), s.ip.c_str(), s.cloudUrl.c_str());
         return false;
     }
     return true;
+}
+
+// JIT-Resolve cloudUrl fuer Speaker bei denen die discoverSync-Phase ein
+// leeres cloudUrl liefert (Telnet-Probe im Boot-Tick failed: Speaker am
+// settling, ARP-Cache kalt, TCP-SYN gedroppt). Aktualisiert sowohl die
+// snapshot-Kopie als auch das persistente Inventory + NVS, damit die
+// nachfolgenden isEligible_-Aufrufe und das UI den frischen Wert sehen.
+//
+// Why als separater Step statt JIT-Probe inside isEligible_: isEligible_
+// wird im Tick zweimal aufgerufen (Counter + Migrate-Schleife). Wenn der
+// JIT dort drin liegt, koennten zwei Telnet-Calls pro empty-cloudUrl-
+// Speaker absetzen — Sequenz-Telnet auf Bose-FW ist nicht reentrant-safe,
+// die zweite Verbindung wartet ggf. unnoetig.
+void resolveEmptyCloudUrls_(std::vector<Speaker>& snapshot, const String& base) {
+    int probed = 0, ok = 0;
+    for (auto& s : snapshot) {
+        if (s.cloudUrl.length() > 0 || s.ip.length() == 0) continue;
+        ++probed;
+        String resolved;
+        MigrationStatus ms = SpeakerInventory::instance()
+                                 .detectStatus(s.ip, base, &resolved);
+        if (resolved.length() == 0) continue;
+        s.cloudUrl = resolved;
+        s.status   = ms;
+        ++ok;
+        SpeakerInventory::LockGuard g(SpeakerInventory::instance());
+        if (Speaker* p = SpeakerInventory::instance().findById(s.deviceId)) {
+            p->cloudUrl = resolved;
+            p->status   = ms;
+        }
+    }
+    if (probed > 0) {
+        SpeakerInventory::instance().saveToNVS();
+        Serial.printf("[auto] JIT cloudUrl resolve: %d probed, %d resolved\n",
+                      probed, ok);
+    }
 }
 
 // Migration eines Speakers per Wert-Snapshot uebergeben; das vermeidet,
@@ -398,6 +444,13 @@ bool runMigrationPass_(const AutoModeConfig& cfg, bool deep) {
 
     auto snapshot = SpeakerInventory::instance().list();
     String base = myBase_();
+    // Fix peer-aware Race (2026-05-26): wenn discoverSync's Telnet-Probe
+    // einen Speaker nicht erreicht hat (cloudUrl leer), JIT nachholen.
+    // Sonst greift die isPeerSixBackCloud_-Skip-Logik nicht und ein frisch
+    // gebooteter SixBack wuerde einen Speaker migrieren der schon einem
+    // anderen SixBack-Stick im LAN gehoert. Symptom: erster Boot-Tick
+    // meldet speakers_eligible=N obwohl alle N auf Peer-Cloud zeigen.
+    resolveEmptyCloudUrls_(snapshot, base);
     int eligible = 0;
     for (auto& s : snapshot) if (isEligible_(s, base)) ++eligible;
     {

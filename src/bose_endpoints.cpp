@@ -1432,6 +1432,12 @@ void registerBoseEndpoints(AsyncWebServer& server) {
     groupsInit_();
 
     server.on("/",                                                    HTTP_GET,  handleBoseRoot);
+    // silence.mp3 — lokal hosten statt von sixback.io. Bose-Speaker (FW 2021)
+    // schaffen das Cloudflare-TLS-Cert nicht und reporten INVALID_SOURCE,
+    // wodurch der long-press nach /select nichts zu speichern findet und der
+    // Push-To-Speaker scheitert. ESP-LittleFS serviert die ~4.5KB MP3 selber.
+    server.serveStatic("/silence.mp3", LittleFS, "/silence.mp3")
+          .setCacheControl("max-age=3600");
     server.on("^/v1/scmudc/([^/]+)$",                                 HTTP_POST,
               handleSCMUDCFinalize, nullptr, handleSCMUDCBody);
     server.on("/bmx/registry/v1/services",                            HTTP_GET,  handleBMXRegistry);

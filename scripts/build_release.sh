@@ -244,6 +244,6 @@ echo
 echo "=== Release artefacts (version $VERSION) ==="
 ls -lh "$OUT"/*.bin "$OUT"/manifest*.json
 echo
-echo "Public landing page:  https://install.busware.de/sixback/"
+echo "Public landing page:  https://sixback.io/"
 echo "Deploy command (user triggers manually):"
 echo "  rsync -avr webflasher/ 10.10.22.1:/var/www/install/sixback/"

@@ -12,7 +12,7 @@
   }
   * { box-sizing: border-box; }
   body { font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
-         max-width: 56em; margin: 1.5em auto; padding: 0 1em;
+         max-width: min(95vw, 92em); margin: 1.5em auto; padding: 0 1em;
          color: var(--ink); background: var(--bg); }
   h1 { color: var(--accent); margin: 0 0 .2em; font-weight: 600; }
   h2 { color: var(--accent); margin-top: 1.5em; font-size: 1.15em; }
@@ -150,8 +150,9 @@
                                      border: 1px dashed var(--line); border-radius: 3px;
                                      font-size: 1em; color: var(--mute); flex-shrink: 0; }
   .preset .slot-row .row-name { font-weight: 600; font-size: .85em;
-                                 overflow: hidden; text-overflow: ellipsis;
-                                 white-space: nowrap; }
+                                 overflow: hidden; word-break: break-word;
+                                 display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+                                 min-width: 0; flex: 1; }
   .preset .slot-row .row-name.empty { font-style: italic; font-weight: 400; color: var(--mute); }
   .preset .slot-row.store .row-name { color: var(--warn); }    /* unsaved edit */
   .preset .slot-actions { display: flex; gap: .35em; margin-top: .35em; align-items: stretch; }
@@ -295,7 +296,7 @@
   .sb-controls button { padding: .35em .7em; font-size: .85em; }
   .sb-hint { color: var(--mute); font-size: .78em; line-height: 1.3; }
   .sb-hint .dnd-strong { color: var(--ink); font-weight: 800; font-size: 1.05em; }
-  .sb-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  .sb-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
              gap: .45em; overflow-y: auto; padding-right: .25em;
              align-content: start; flex: 1; min-height: 0; }
   .sb-empty { text-align: center; color: var(--mute); padding: 1.5em .8em; font-style: italic; font-size: .85em; }
@@ -313,10 +314,12 @@
                             align-items: center; justify-content: center; background: #fff;
                             border: 1px dashed #ccc; border-radius: 4px; font-size: 1.3em; color: var(--mute);
                             pointer-events: none; }
-  .lib-tile .tile-name { font-weight: 600; font-size: .78em; line-height: 1.2;
-                         overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .lib-tile .tile-name { font-weight: 600; font-size: .78em; line-height: 1.25;
+                         overflow: hidden; word-break: break-word;
+                         display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
   .lib-tile .tile-meta { font-size: .68em; color: var(--mute);
-                         overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+                         overflow: hidden; word-break: break-word;
+                         display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; }
   /* ============== Progress modal (long-running ops) ====================== */
   /* Backdrop blocks all clicks under the dialog while a sync/push is running
      so user can't fire a second op and race the first. */
@@ -376,9 +379,10 @@
     <span id="sb-handle-icon">◧</span><span id="sb-handle-text">Media</span>
   </button>
   <div class="sb-tabs">
-    <button class="sb-tab active" data-tab="radio"  onclick="sidebarSelectTab('radio')">📻 Radio</button>
-    <button class="sb-tab"        data-tab="stream" onclick="sidebarSelectTab('stream')">🔗 Stream</button>
-    <button class="sb-tab"        data-tab="dlna"   onclick="sidebarSelectTab('dlna')">💿 DLNA</button>
+    <button class="sb-tab active" data-tab="radio"   onclick="sidebarSelectTab('radio')">📻 Radio</button>
+    <button class="sb-tab"        data-tab="stream"  onclick="sidebarSelectTab('stream')">🔗 Stream</button>
+    <button class="sb-tab"        data-tab="dlna"    onclick="sidebarSelectTab('dlna')">💿 DLNA</button>
+    <button class="sb-tab"        data-tab="spotify" onclick="sidebarSelectTab('spotify')">🎵 Spotify</button>
   </div>
   <!-- Preview-target bar: applies to all tabs. A single click on any tile
        previews that source on the chosen target without writing a preset. -->
@@ -414,7 +418,8 @@
       </div>
       <div class="sb-stream-meta" id="stream-meta"></div>
       <div class="sb-hint"><span class="dnd-strong">↦ Drag a validated tile onto a preset slot</span> to save it there.<br>
-        Validator probes the URL (HEAD/ICY) on the proxy; bad URLs are flagged.</div>
+        Validator probes the URL (HEAD/ICY) on the proxy; bad URLs are flagged.<br>
+        <b style="color:#7a5400">HTTP URLs work best</b> — old Bose-FW (2021) can't validate Cloudflare/Let's-Encrypt certs on HTTPS streams, the speaker drops them as <code>INVALID_SOURCE</code>.</div>
       <div class="sb-grid" id="stream-grid">
         <div class="sb-empty">No custom streams yet. Add one above.</div>
       </div>
@@ -430,6 +435,84 @@
           itself. The proper in-app browse (server list + UPnP-CDS folders +
           drag-track) lands in the next iteration.</p>
       </div>
+    </section>
+
+    <!-- Spotify tab — connect status + URI library + D&D source -->
+    <section class="sb-panel" id="sb-panel-spotify">
+      <!-- Connection status (always visible) -->
+      <div id="spot-status" style="font-size:.85em; padding:.5em .7em; margin-bottom:.4em; border-radius:4px; background:#1f2a1f; border-left:3px solid #88c">
+        <span class="mute">Loading Spotify status…</span>
+      </div>
+
+      <!-- Connect / re-link (collapsible) -->
+      <details id="spot-connect-details">
+        <summary style="cursor:pointer; font-weight:600; padding:.3em 0; font-size:.9em">⚙ Connect / re-link Spotify account</summary>
+        <div id="spot-appcreds-status" style="margin:.5em 0; padding:.4em .6em; background:#1f2a1f; border-left:3px solid #88c; font-size:.82em">
+          Loading App-Creds status…
+        </div>
+        <p style="font-size:.8em; line-height:1.5; margin:.3em 0; color:var(--ink)">
+          One-time: create a free Spotify Developer App at
+          <a href="https://developer.spotify.com/dashboard" target="_blank" rel="noopener">developer.spotify.com</a>,
+          set the redirect URI to
+          <code id="spot-redirect-uri" style="user-select:all">…</code>,
+          then save Client ID + Secret here.
+        </p>
+        <div id="spot-appcreds-step" style="display:grid; grid-template-columns:auto 1fr; gap:.3em .5em; margin:.5em 0">
+          <label style="align-self:center; font-size:.82em">Client ID</label>
+          <input type="text" id="spot-clientid" placeholder="32-char hex">
+          <label style="align-self:center; font-size:.82em">Client Secret</label>
+          <input type="password" id="spot-clientsecret" placeholder="32-char hex (kept on ESP)">
+        </div>
+        <div class="row" style="gap:.3em; flex-wrap:wrap">
+          <button onclick="spotifySaveAppCreds()">Save App-Creds</button>
+          <button onclick="spotifyClearAppCreds()" style="font-size:.85em">Clear stored creds</button>
+        </div>
+        <div style="margin:.6em 0 .3em">
+          <button class="primary" onclick="spotifyConnectStored()" style="width:100%">Connect Spotify</button>
+        </div>
+      </details>
+
+      <!-- Speaker pairing reminder — distinct from account connect -->
+      <div style="margin:.4em 0; padding:.4em .6em; background:#fff8dd; border-left:3px solid #d4a000; font-size:.78em; line-height:1.4; color:#5a4300">
+        <b>One-time speaker pairing:</b> in your Spotify app pick the speaker
+        (e.g. Emma) from "Connect to a device" once and start any track.
+        After that, SixBack can trigger it for every preset press. Repeat once
+        per speaker reboot.
+      </div>
+
+      <!-- Add-URI form -->
+      <div class="sb-controls" style="flex-direction:column; align-items:stretch; gap:.3em">
+        <input type="text" id="splib-uri" placeholder="spotify:album:… or open.spotify.com/album/…">
+        <input type="text" id="splib-name" placeholder="Display name (optional)">
+        <div style="display:flex; gap:.6em; align-items:center; font-size:.85em; flex-wrap:wrap">
+          <label style="display:inline-flex; align-items:center; gap:.3em">
+            <input type="checkbox" id="splib-shuffle"> 🔀 Shuffle
+          </label>
+          <label style="display:inline-flex; align-items:center; gap:.3em">
+            🔁
+            <select id="splib-repeat" style="font-size:.85em">
+              <option value="off">Off</option>
+              <option value="track">Track</option>
+              <option value="context">Album/Playlist</option>
+            </select>
+          </label>
+        </div>
+        <button class="primary" id="splib-add-btn" onclick="spotifyLibraryAdd()">+ Add to library</button>
+      </div>
+
+      <div class="sb-hint">
+        <span class="dnd-strong">↦ Drag a tile onto a preset slot</span>
+        to bind it. Hardware-button-press triggers Spotify via TUNEIN-tunnel.
+      </div>
+
+      <div class="sb-grid" id="splib-grid">
+        <div class="sb-empty">No Spotify items yet. Paste a URI above.</div>
+      </div>
+
+      <details style="margin-top:.5em; font-size:.85em">
+        <summary style="cursor:pointer; color:var(--mute)">Last preset-button triggers</summary>
+        <div id="spot-triggers-list" style="margin-top:.3em">—</div>
+      </details>
     </section>
   </div>
 </aside>
@@ -483,7 +566,7 @@
   <div style="font-weight:600; margin:.4em 0 .3em;">Online update</div>
   <p class="hint" style="margin-top:0">
     The ESP fetches the matching firmware-image for its chip directly
-    from <a href="https://install.busware.de/sixback/" target="_blank" rel="noopener">install.busware.de</a>
+    from <a href="https://sixback.io/" target="_blank" rel="noopener">sixback.io</a>
     — no local file needed.
   </p>
   <div class="fwmeta">
@@ -526,57 +609,6 @@
     or to roll back to an older release. App image goes first, LittleFS image
     second; the ESP reboots after each flash and the page reloads ~9 s later.
   </p>
-</div>
-
-<div class="fwcard" id="spotify-card">
-  <h2>🎵 Spotify integration</h2>
-  <p class="hint" style="margin-top:0">
-    Bind a Spotify URI (track / playlist / album) to a preset slot. When the
-    user presses that slot on the speaker, SixBack triggers Spotify Connect
-    to play the URI on the speaker (requires Spotify Premium and one-time
-    OAuth-Login of your account).
-  </p>
-  <div id="spot-status" style="margin:.4em 0; padding:.6em .8em; border-radius:4px; background:#1f2a1f; border-left:3px solid #88c">
-    <span class="mute">Loading Spotify status…</span>
-  </div>
-  <div id="spot-triggers" style="margin:.4em 0 .8em; font-size:.88em">
-    <div style="color:var(--mute); margin-bottom:.2em">Last preset-button triggers:</div>
-    <div id="spot-triggers-list">—</div>
-  </div>
-  <p style="font-size:.85em; color:var(--mute); margin:.5em 0; padding:.5em .7em; background:#332f1a; border-left:3px solid #d4a000">
-    <b>One-time speaker pairing required:</b> open the Spotify app on your phone or desktop,
-    pick your Bose speaker (e.g. Emma) from the "Connect to a device" menu, and start any
-    track on it. After that the speaker is registered with your Spotify account and SixBack
-    can trigger it for every preset press. If a speaker reboots, repeat once.
-  </p>
-  <details id="spot-connect-details">
-    <summary style="cursor:pointer; font-weight:600; padding:.3em 0">Connect / re-link Spotify account</summary>
-    <ol style="font-size:.9em; line-height:1.55; padding-left:1.4em">
-      <li>Create a Spotify Developer App at
-        <a href="https://developer.spotify.com/dashboard" target="_blank" rel="noopener">developer.spotify.com/dashboard</a>
-        (one-click, free, no app review needed).</li>
-      <li>In the app settings, set the <b>redirect URI</b> to:
-        <code id="spot-redirect-uri">http://127.0.0.1:8888/callback</code>
-      </li>
-      <li>Copy Client&nbsp;ID and Client&nbsp;Secret here:
-        <div style="display:grid; grid-template-columns:auto 1fr; gap:.4em .6em; margin:.6em 0; max-width:600px">
-          <label style="align-self:center">Client ID</label>
-          <input type="text" id="spot-clientid" placeholder="32-char hex">
-          <label style="align-self:center">Client Secret</label>
-          <input type="password" id="spot-clientsecret" placeholder="32-char hex (kept on ESP only)">
-        </div>
-        <button class="primary" onclick="spotifyOpenAuth()">Open Spotify auth in new tab</button>
-      </li>
-      <li>After authorizing, your browser will redirect to
-        <code>127.0.0.1:8888/callback?code=…</code> and fail to load.
-        That is OK. Copy the FULL URL from the address bar and paste it here:
-        <input type="text" id="spot-callbackurl"
-               placeholder="http://127.0.0.1:8888/callback?code=…&amp;state=…"
-               style="margin:.4em 0; width:100%; max-width:600px">
-        <button class="primary" onclick="spotifyExchangeCode()">Complete setup</button>
-      </li>
-    </ol>
-  </details>
 </div>
 
 <div class="syspanel">
@@ -633,6 +665,31 @@
   </div>
 </div>
 
+<div class="modal" id="modal-spotify">
+  <div class="box">
+    <h3 id="sp-modal-title">Spotify binding for slot N</h3>
+    <label>Spotify URI or share-URL</label>
+    <input type="text" id="sp-uri" placeholder="spotify:album:... or https://open.spotify.com/...">
+    <label>Display name (optional, UI only)</label>
+    <input type="text" id="sp-name" placeholder="e.g. Pink Floyd — The Wall">
+    <label style="display:flex;align-items:center;gap:.5em;font-weight:normal">
+      <input type="checkbox" id="sp-shuffle" style="width:auto;margin:0">
+      🔀 Shuffle on
+    </label>
+    <label>🔁 Repeat mode</label>
+    <select id="sp-repeat">
+      <option value="off">Off</option>
+      <option value="track">Repeat one track</option>
+      <option value="context">Repeat full album/playlist</option>
+    </select>
+    <div class="row">
+      <button onclick="closeModal('modal-spotify')">Cancel</button>
+      <button class="danger" onclick="spotifyClearSlotModal()">Delete from library</button>
+      <button class="primary" onclick="spotifySaveSlotModal()">Save</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal" id="modal-group">
   <div class="box">
     <h3>Copy presets from one speaker to others</h3>
@@ -668,7 +725,7 @@
     <div class="ota-progress-label" id="snap-prog-label"></div>
     <p style="margin:.8em 0 .2em;font-size:.78em;color:var(--mute)">
       <strong>Send to maintainer</strong> uploads the snapshot to
-      <code>install.busware.de</code> for unsupported-source debugging.
+      <code>sixback.io</code> for unsupported-source debugging.
       Includes speaker MAC, IP, firmware version, source XMLs. No WiFi
       credentials or personal data.
     </p>
@@ -698,13 +755,13 @@ let STATE = { speakers: [], editing: null, dragSource: null, _lastDragEndedAt: 0
 // Station library proxy bases. Tried in order until one returns 200.
 // Override head-of-list via DevTools or localStorage:
 //   localStorage.SIXBACK_STATIONS_BASE = 'http://10.10.11.113:8789/sixback/stations'
-// Default: prefer install.busware.de (works from anywhere once Apache
-// snippet is live), fall back to direct Pi5 LAN address while Apache
-// isn't deployed yet.
+// Default: prefer sixback.io (kanonische Domain seit 2026-05-25, Apache
+// reverse-proxy zu Pi5:8789/sixback/stations/), fall back zur direkten
+// LAN-Adresse (nur fuer Devices im AILab nuetzlich).
 const STATIONS_API_BASES = [
   window.SIXBACK_STATIONS_BASE,
   localStorage.getItem('SIXBACK_STATIONS_BASE'),
-  'https://install.busware.de/sixback/stations',
+  'https://sixback.io/stations',
   'http://10.10.11.113:8789/sixback/stations',
 ].filter(Boolean);
 let STATIONS_API_BASE = STATIONS_API_BASES[0];   // updated to whichever base actually works
@@ -951,7 +1008,7 @@ function uploadOta(kind) {
   xhr.send(fd);
 }
 
-// ---- Online-Update (ESP pulls firmware from install.busware.de) ----
+// ---- Online-Update (ESP pulls firmware from sixback.io) ----
 // Pattern stammt aus tul-knx-gateway / ip4knx — der ESP zieht selbst per
 // HTTPS aus dem Distributions-Host. UI ruft check/install und pollt status.
 let OTA_POLL = null;
@@ -1068,8 +1125,8 @@ async function onlineCheck() {
 
 async function onlineInstall(force) {
   const what = force
-    ? 'Re-install current/older firmware from install.busware.de?\n\nESP will fetch the firmware via HTTPS and reboot when done.'
-    : 'Install update from install.busware.de?\n\nESP will fetch the firmware via HTTPS and reboot when done.';
+    ? 'Re-install current/older firmware from sixback.io?\n\nESP will fetch the firmware via HTTPS and reboot when done.'
+    : 'Install update from sixback.io?\n\nESP will fetch the firmware via HTTPS and reboot when done.';
   if (!confirm(what)) return;
   try {
     const url = '/api/update/install' + (force ? '?force=1' : '');
@@ -1351,6 +1408,17 @@ function slotsMatch_(store, hw) {
   if (isSlotEmpty_(store) && isSlotEmpty_(hw)) return true;
   if (isSlotEmpty_(store) || isSlotEmpty_(hw)) return false;
   if (store.source === 'TUNEIN' && hw.source === 'TUNEIN') {
+    // Tunnel-Sentinels (sspot{N}, sstrm{N}): nur stationId vergleichen,
+    // Name ignorieren. Bose-FW akzeptiert long-press auf einen Slot der
+    // bereits dieselbe Location traegt zwar als 200, aber persistiert den
+    // neuen Name NICHT — die Slots haengen dann ewig auf "unsaved". Da der
+    // Trigger/Stream rein ueber die stationId arbeitet (Spotify-Mapping bzw.
+    // resolver-streamUrl-lookup), ist der Name dort kosmetisch.
+    if (store.stationId &&
+        (store.stationId.indexOf('sspot') === 0 || store.stationId.indexOf('sstrm') === 0) &&
+        hw.station_id === store.stationId) {
+      return true;
+    }
     return store.stationId === hw.station_id && store.name === hw.name;
   }
   if (store.source === 'LOCAL_INTERNET_RADIO' && hw.source === 'LOCAL_INTERNET_RADIO') {
@@ -1409,35 +1477,43 @@ function presetCard(devId, slotNum) {
   if (storeEmpty && hwEmpty)  badge = '';
   else if (synced)            badge = '<span class="slot-synced-badge">✓ synced</span>';
   else                        badge = '<span class="slot-edit-badge">✏ unsaved</span>';
-  // Spotify-Binding-Indikator. Klick → URI-Eingabe. Stop-propagation, sonst
-  // triggert onPresetClick auf der Karte.
-  // 4 Zustände: (connected × bound) — connected+bound=grün, connected+unbound=grau,
-  // disconnected+bound=gelb mit warn-tooltip, disconnected+unbound=kein Badge.
-  const spotKey       = `${devId}_${slotNum}`;
-  const spotBind      = STATE.spotifySlots[spotKey];
+  // Spotify-Badge in der Slot-Card wurde entfernt — Library-Edit passiert
+  // jetzt in der linken Sidebar (Spotify-Tab, ✏-Button pro Library-Tile).
+  // Slots werden ausschliesslich per D&D vom Library-Tile gebunden; bestehende
+  // Bindung sieht man am Spotify-Sub-Row im Slot-Body unterhalb.
+  const spotKey = `${devId}_${slotNum}`;
+  const spotBind = STATE.spotifySlots[spotKey];
   const spotConnected = !!(STATE.spotifyAuth && STATE.spotifyAuth.configured);
-  let spotBadge = '';
-  if (spotConnected && spotBind) {
-    spotBadge = `<span class="slot-spot-badge bound"
-             title="Spotify: ${esc(spotBind.uri)}\n(click to edit / clear)"
-             onclick="event.stopPropagation(); spotifySetSlot('${esc(devId)}', ${slotNum})">🎵</span>`;
-  } else if (spotConnected && !spotBind) {
-    spotBadge = `<span class="slot-spot-badge unbound"
-             title="Bind this slot to a Spotify URI"
-             onclick="event.stopPropagation(); spotifySetSlot('${esc(devId)}', ${slotNum})">🎵</span>`;
-  } else if (!spotConnected && spotBind) {
-    spotBadge = `<span class="slot-spot-badge warn"
-             title="Spotify not connected — this binding won't fire.\nURI: ${esc(spotBind.uri)}\n(click to edit / clear; connect Spotify below to enable)"
-             onclick="event.stopPropagation(); spotifySetSlot('${esc(devId)}', ${slotNum})">🎵</span>`;
-  }
-  // else: not connected + not bound → no badge at all
-  const head = `<div class="slot-head"><span>Preset ${slotNum}</span>${badge}${spotBadge}</div>`;
+  const head = `<div class="slot-head"><span>Preset ${slotNum}</span>${badge}</div>`;
+
+  // Spotify-Label-Body: wenn Spotify-Mapping da, zeige "🎵 Spotify: <name>"
+  // (zusätzlich/statt store-name). Click auf Slot triggert dann Spotify (siehe
+  // playSpeakerSlot-Logik). Shuffle/Repeat als Icon-Suffix.
+  const _spotIcons = (spotBind && spotBind.uri)
+    ? (spotBind.shuffle ? ' 🔀' : '') +
+      (spotBind.repeat === 'track'   ? ' 🔂' :
+       spotBind.repeat === 'context' ? ' 🔁' : '')
+    : '';
+  const _spotIconTitle = (spotBind && spotBind.uri)
+    ? (spotBind.shuffle ? 'shuffle ' : '') + 'repeat=' + (spotBind.repeat || 'off')
+    : '';
+  const spotLabel = (spotBind && spotBind.uri)
+    ? `<div class="slot-row spotify">` +
+        `<span class="row-label">spotify</span>` +
+        `<span class="row-name" style="color:#1DB954">🎵 ${esc(spotBind.name || spotBind.uri)}` +
+          (_spotIcons ? `<span class="spot-mode" title="${esc(_spotIconTitle)}">${_spotIcons}</span>` : '') +
+        `</span>` +
+      `</div>`
+    : '';
 
   let body;
   if (storeEmpty && hwEmpty) {
-    body = `<div class="slot-empty-drop">＋ drop a TuneIn tile here</div>`;
+    body = spotLabel
+         ? spotLabel + `<div class="slot-hint" style="font-size:.8em;color:var(--mute);margin-top:.3em">click to trigger</div>`
+         : `<div class="slot-empty-drop">＋ drop a TuneIn tile here</div>`;
   } else if (synced) {
-    body = `<div class="slot-single">${slotIcon_(store, true)}<span class="row-name">${esc(slotName_(store))}</span></div>`;
+    body = `<div class="slot-single">${slotIcon_(store, true)}<span class="row-name">${esc(slotName_(store))}</span></div>`
+         + spotLabel;
   } else {
     // Two rows. HW may be empty.
     body =
@@ -1451,6 +1527,7 @@ function presetCard(devId, slotNum) {
         slotIcon_(store, false) +
         `<span class="row-name${storeEmpty ? ' empty' : ''}">${esc(storeEmpty ? '(cleared)' : slotName_(store))}</span>` +
       `</div>` +
+      spotLabel +
       `<div class="slot-actions">` +
         `<button class="slot-push" onclick="event.stopPropagation(); pushSingleSlot('${esc(devId)}', ${slotNum})">push slot ${slotNum} →</button>` +
         `<button class="slot-undo" title="Cancel — discard this unsaved change and revert this slot to the speaker's current state" onclick="event.stopPropagation(); revertSlot('${esc(devId)}', ${slotNum})">✕</button>` +
@@ -1510,7 +1587,22 @@ async function onPresetClick(ev, devId, slot) {
   // speaker simply does nothing.
   const d = STATE.presetsByDev[devId];
   const hw = d && d.hw && d.hw[slot-1];
+  const spotKey = `${devId}_${slot}`;
+  const spot = STATE.spotifySlots && STATE.spotifySlots[spotKey];
+
   if (!hw || isSlotEmpty_(hw)) {
+    if (spot && spot.uri) {
+      // Bose-Slot leer aber Spotify-Mapping da → simuliere preset-press
+      // (triggert direkt Spotify-/play, kein Bose-Source-Switch).
+      try {
+        await api(`/api/spotify/simulate/${encodeURIComponent(devId)}/${slot}`,
+                  {method:'POST'});
+        toast(`▶ Spotify: ${spot.name || spot.uri}`);
+      } catch(e) {
+        toast('Spotify trigger failed: '+e.message);
+      }
+      return;
+    }
     toast(`Speaker slot ${slot} is empty — push a station to it first`);
     return;
   }
@@ -1563,17 +1655,29 @@ async function pushSingleSlot(devId, slot) {
   progressStep('press',  'done');
   progressStep('verify', 'running');
   progressBar(80);
-  // Re-fetch hardware-presets and update STATE.
+  // Re-fetch hardware-presets — Polling-Loop weil Bose-Push tatsaechlich
+  // 13–20s braucht (Worker-Queue + /select + 8s settle + long-press), die
+  // Modal-Timeslices (8+3) lassen das Verify zu frueh feuern. 5x x 2.5s = 12.5s
+  // extra Toleranz, dann erst error melden.
   try {
-    const hwR = await api(`/api/speaker/${encodeURIComponent(devId)}/hardware-presets`);
-    d.hw = normalizeHwSlots_(hwR.slots || [], hwR.ok);
-    const newSynced = slotsMatch_(d.store[slot-1], d.hw[slot-1]);
+    let newSynced = false;
+    let lastHw = null;
+    for (let attempt = 0; attempt < 6 && !newSynced; ++attempt) {
+      if (attempt > 0) await new Promise(r => setTimeout(r, 2500));
+      const hwR = await api(`/api/speaker/${encodeURIComponent(devId)}/hardware-presets`);
+      lastHw = hwR;
+      d.hw = normalizeHwSlots_(hwR.slots || [], hwR.ok);
+      newSynced = slotsMatch_(d.store[slot-1], d.hw[slot-1]);
+      if (!newSynced && attempt < 5) {
+        progressStep('verify', 'running', `re-checking… (${attempt+1}/5)`);
+      }
+    }
     if (newSynced) {
       progressStep('verify', 'done', '✓ slot matches');
       STATE.dirtySpeakers.delete(devId);
     } else {
       progressStep('verify', 'error',
-                   'hardware did not save (Bose-side LOCAL_INTERNET_RADIO bug — TUNEIN only)');
+                   'hardware did not save after retries (Bose-side issue or name-normalization)');
     }
     renderSpeakerSlots(devId);
     updatePushVisibility(devId);
@@ -1581,7 +1685,7 @@ async function pushSingleSlot(devId, slot) {
     progressStep('verify', 'error', e.message);
   }
   progressBar(100);
-  progressDone(1500);   // auto-close after 1.5s grace
+  progressDone(1500);
 }
 
 // Cancel an unsaved (store != hw) edit on a slot: tells the backend to
@@ -1666,9 +1770,11 @@ function onPresetDragOver(ev) {
   // STATE.dragSource — accept them when the dataTransfer carries something
   // we can understand. Without preventDefault() the browser refuses the drop.
   const dt = ev.dataTransfer;
+  const types = Array.from(dt.types || []);
   const isExternal = !STATE.dragSource &&
-    (Array.from(dt.types || []).includes('application/x-sixback-preset+json') ||
-     Array.from(dt.types || []).includes('Files'));
+    (types.includes('application/x-sixback-preset+json') ||
+     types.includes('application/x-sixback-spotify+json') ||
+     types.includes('Files'));
   if (!STATE.dragSource && !isExternal) return;
   ev.preventDefault();   // erlaubt Drop
   const el = ev.currentTarget;
@@ -1714,14 +1820,27 @@ async function applyExternalPreset(payload, dst) {
       streamUrl: payload.streamUrl || '',
       imageUrl: payload.imageUrl || '',
     };
+    // Falls das Export-File ein Spotify-Mapping enthielt: durchreichen, damit
+    // Backend (handlePutPreset) das Mapping wiederherstellt — sonst verliert
+    // der Re-Import die Spotify-Track/Album-Bindung.
+    if (payload.spotify && payload.spotify.uri) {
+      body.spotify = {
+        uri:     payload.spotify.uri,
+        name:    payload.spotify.name    || payload.name || '',
+        shuffle: !!payload.spotify.shuffle,
+        repeat:  payload.spotify.repeat  || 'off',
+      };
+    }
     const r = await api(`/api/speaker/${encodeURIComponent(dst.dev)}/preset/${dst.slot}`,
                        {method:'PUT', headers:{'Content-Type':'application/json'},
                         body: JSON.stringify(body)});
     if (r && r.ok) {
       markDirty(dst.dev);
-      toast(`Imported "${payload.name || payload.source}" → slot ${dst.slot}` +
+      const spotMsg = payload.spotify && payload.spotify.uri ? ' + Spotify mapping' : '';
+      toast(`Imported "${payload.name || payload.source}"${spotMsg} → slot ${dst.slot}` +
             (payload.exported_from ? ` (from ${payload.exported_from})` : ''));
       loadPresetsFor(dst.dev);
+      if (payload.spotify && payload.spotify.uri) loadSpotifySlots();
       kickPoll(dst.dev);
     } else {
       toast('Import failed: '+(r && r.error || 'unknown'));
@@ -1741,6 +1860,19 @@ async function onPresetDrop(ev) {
   // hardware does /select + long-press which the speaker accepts as
   // replacement. Dragging FROM an OPAQUE slot stays disabled at the
   // source side (presetCard sets draggable=false).
+
+  // Spotify-Library-Tile drop: own MIME so we can dispatch to the Spotify-
+  // slot-bind path (PUT /api/spotify/slot/...) rather than to a Bose-preset.
+  // Same-tab drag puts the payload in STATE.dragSource; cross-window/file
+  // drops would arrive via the MIME read below — same handler.
+  const spotifyMime = ev.dataTransfer.getData('application/x-sixback-spotify+json');
+  if (STATE.dragSource && STATE.dragSource.kind === 'spotify-library') {
+    return applySpotifyDrop(STATE.dragSource.payload, dst);
+  }
+  if (spotifyMime) {
+    try { return applySpotifyDrop(JSON.parse(spotifyMime), dst); }
+    catch(_) { toast('Spotify drop payload malformed', 'error'); return; }
+  }
 
   // External payload route: cross-window drag (different tab/window of the
   // same or another SixBack), or .json file dropped from the desktop.
@@ -1766,19 +1898,31 @@ async function onPresetDrop(ev) {
   }
 
   if (src.kind === 'library') {
-    // Only TUNEIN drops produce reliable speaker-saves. Stream-tab tiles are
-    // non-draggable anyway, but defensive-check libSource here in case a
-    // payload sneaks in via cross-window drop.
-    if (src.libSource !== 'TUNEIN') {
-      toast(`Drop blocked — Bose speakers don't save custom stream URLs as presets reliably. Use TuneIn (Radio tab).`, 'error');
-      return;
+    // Beide Quellen werden als TUNEIN-Source gespeichert — direkt LIR/
+    // LOCAL_INTERNET_RADIO funktioniert auf Bose-Speakern nicht (siehe
+    // memory reference_bose_local_internet_radio_speaker_save_broken).
+    //   - Radio-Tab (libSource=TUNEIN): native stationId aus TuneIn (s12345)
+    //   - Stream-Tab (libSource=LOCAL_INTERNET_RADIO): Tunnel via stationId=
+    //     "sstrm{slot}" + streamUrl im preset. Resolver returnt preset.streamUrl
+    //     wenn Speaker /v1/playback/station/sstrm{N} fetched.
+    let putBody;
+    if (src.libSource === 'TUNEIN') {
+      putBody = {
+        source: 'TUNEIN',
+        name: src.name,
+        stationId: src.stationId,
+        imageUrl: src.imageUrl || '',
+      };
+    } else {
+      // Stream-Tab tile (LIR) — als TUNEIN-Tunnel anlegen.
+      putBody = {
+        source: 'TUNEIN',
+        name: src.name,
+        stationId: `sstrm${dst.slot}`,
+        streamUrl: src.streamUrl,
+        imageUrl: src.imageUrl || '',
+      };
     }
-    const putBody = {
-      source: 'TUNEIN',
-      name: src.name,
-      stationId: src.stationId,
-      imageUrl: src.imageUrl || '',
-    };
     try {
       const r = await api(`/api/speaker/${encodeURIComponent(dst.dev)}/preset/${dst.slot}`, {
         method: 'PUT',
@@ -1787,7 +1931,9 @@ async function onPresetDrop(ev) {
       });
       if (r && r.ok) {
         markDirty(dst.dev);
-        toast(`"${src.name}" → slot ${dst.slot}. Click the slot's push button to save to speaker.`);
+        const note = src.libSource === 'TUNEIN' ? ''
+                   : ' (stream-tunnel — HTTP-only streams work best; HTTPS streams may fail on older Bose-FW)';
+        toast(`"${src.name}" → slot ${dst.slot}${note}. Click the slot's push button to save to speaker.`);
         loadPresetsFor(dst.dev);
         kickPoll(dst.dev);
       } else {
@@ -1959,6 +2105,22 @@ function applyPlayingHighlight(devId) {
   if (!src || src === 'STANDBY' || src === 'INVALID_SOURCE') return;
   if (ps === 'STOP_STATE' || ps === 'PAUSE_STATE') return;
   const title = (np.title || '').trim();
+  // SPOTIFY-source: kein direkter Match auf preset-name (Spotify-title = track,
+  // preset-name = "🎵 Album"). Stattdessen: juengsten erfolgreichen Trigger
+  // dieses Devices (<5 min alt) nehmen — der hat den slot der gerade spielt.
+  let spotSlot = null;
+  if (src === 'SPOTIFY' && STATE.spotifyLastTrigger && STATE.spotifyLastTrigger[devId]) {
+    const lt = STATE.spotifyLastTrigger[devId];
+    if (lt.age_ms < 300000) spotSlot = lt.slot;
+  }
+  // TUNEIN-tunnel matching: ContentItem.location aus item-started ist z.B.
+  // "/v1/playback/station/sstrm2" — extrahiere den stationId und matche
+  // gegen slot.stationId. Trifft TuneIn-native Stations (s24896 etc.) und
+  // beide Tunnel-Typen (sspot/sstrm) gleichermassen.
+  let locationStationId = '';
+  if (src === 'TUNEIN' && np.location && np.location.startsWith('/v1/playback/station/')) {
+    locationStationId = np.location.substring('/v1/playback/station/'.length);
+  }
   // SCMUDC-event-cache doesn't include stationId/streamUrl, so we match by
   // title (= itemName in /now_playing XML). For TUNEIN/LOCAL_INTERNET_RADIO
   // the title matches the preset's display name. Multi-station-with-same-
@@ -1973,6 +2135,8 @@ function applyPlayingHighlight(devId) {
     let match = false;
     if (title && p.name && title === p.name) match = true;
     else if (src === 'STORED_MUSIC' && p.source === 'OPAQUE') match = true;
+    else if (spotSlot && slot === spotSlot) match = true;
+    else if (locationStationId && p.stationId && p.stationId === locationStationId) match = true;
     if (match) t.classList.add('playing');
   });
 }
@@ -2064,21 +2228,26 @@ async function pushAllPresets(devId) {
     progressStep('s'+p.slot, 'done');
     i++;
   }
-  // Re-fetch hardware-presets to verify each push landed. LOCAL_INTERNET_RADIO
-  // pushes typically fail at the speaker (Bose-side bug) — surface that here.
+  // Re-fetch hardware-presets to verify each push landed. Polling-Loop weil
+  // serial push queue noch laeuft wenn unsere Time-Slice abgelaufen ist.
+  // Hoechstens 6 Retries x 2.5s = 15s extra Toleranz.
   progressBar(95);
   try {
-    const hwR = await api(`/api/speaker/${encodeURIComponent(devId)}/hardware-presets`);
-    d.hw = normalizeHwSlots_(hwR.slots || [], hwR.ok);
+    let allSynced = false;
+    for (let attempt = 0; attempt < 6 && !allSynced; ++attempt) {
+      if (attempt > 0) await new Promise(r => setTimeout(r, 2500));
+      const hwR = await api(`/api/speaker/${encodeURIComponent(devId)}/hardware-presets`);
+      d.hw = normalizeHwSlots_(hwR.slots || [], hwR.ok);
+      allSynced = toPush.every(p => slotsMatch_(d.store[p.slot-1], d.hw[p.slot-1]));
+    }
     for (const p of toPush) {
       const newSynced = slotsMatch_(d.store[p.slot-1], d.hw[p.slot-1]);
       if (!newSynced) {
         progressStep('s'+p.slot, 'error',
-          'hardware did not save (Bose accepts /select but won\'t persist this source)');
+          'hardware did not save after retries (Bose-side or name-normalization)');
       }
     }
     renderSpeakerSlots(devId);
-    const allSynced = toPush.every(p => slotsMatch_(d.store[p.slot-1], d.hw[p.slot-1]));
     if (allSynced) clearDirty(devId);
   } catch (e) { /* verify-step failure is non-fatal */ }
   progressBar(100);
@@ -2105,6 +2274,12 @@ function sidebarSelectTab(name) {
   STATE.sidebarTab = name;
   refreshSidebarTargets();         // browser-option visibility may change
   if (name === 'radio' && STATE.libResults.length === 0) loadLibrary();
+  if (name === 'spotify') {
+    loadSpotifyAuth();
+    loadSpotifyAppCreds();
+    loadSpotifyTriggers();
+    loadSpotifyLibrary();
+  }
 }
 
 // Stream tab: paste URL+Name, server-side validate, then user drags result tile.
@@ -2172,13 +2347,15 @@ function renderStreamTiles() {
   }
   grid.innerHTML = STATE.streamTiles.map((s, idx) => {
     const payload = JSON.stringify({
+      libSource: 'LOCAL_INTERNET_RADIO',
       name: s.name, streamUrl: s.streamUrl, imageUrl: s.imageUrl, uuid: 'stream-'+idx,
     }).replace(/"/g,'&quot;');
     const title = `${s.name} — ${s.icyName || s.contentType || 'stream'}${s.bitrate ? ' · '+s.bitrate+'k' : ''}`;
     return `
-      <div class="lib-tile" draggable="false" data-payload="${payload}"
+      <div class="lib-tile" draggable="true" data-payload="${payload}"
+           ondragstart="onLibraryDragStart(event)" ondragend="onLibraryDragEnd(event)"
            onclick="onLibraryTileClick(event)"
-           title="${esc(title)} — click to preview (browser only — Bose speakers don't save custom stream URLs reliably)">
+           title="${esc(title)} — click=browser-preview, drag=set as TUNEIN-tunnel preset (works for most HTTP streams)">
         ${s.imageUrl
           ? `<img class="tile-logo" src="${esc(s.imageUrl)}" alt="" loading="lazy"
                    onerror="this.outerHTML='<div class=&quot;tile-logo-ph&quot;>🔗</div>'">`
@@ -2689,7 +2866,7 @@ async function downloadSnapshot(devId) {
   openModal('modal-snapshot');
 }
 
-const SNAPSHOT_UPLOAD_URL = 'https://install.busware.de/sixback/snapshot';
+const SNAPSHOT_UPLOAD_URL = 'https://sixback.io/snapshots/bosefix/snapshot';
 
 async function snapshotSend() {
   const devId = g_snapDev;
@@ -2724,7 +2901,7 @@ async function snapshotSend() {
     }
     const snapJson = await r1.text();
     bar.style.width = '50%';
-    lbl.textContent = 'Step 2/2 — uploading to install.busware.de…';
+    lbl.textContent = 'Step 2/2 — uploading to sixback.io…';
 
     // Step 2: POST to maintainer endpoint
     const r2 = await fetch(SNAPSHOT_UPLOAD_URL, {
@@ -3269,8 +3446,11 @@ try {
 // ---- Spotify ----------------------------------------------------------
 // Slot-Map cache: { "DEVICEID_N": "spotify:uri" }; used by presetCard() to
 // stamp a Spotify badge onto Slot N of that speaker.
-STATE.spotifySlots = {};
-STATE.spotifyAuth  = null;
+STATE.spotifySlots   = {};
+STATE.spotifyAuth    = null;
+// Library: User-curated Spotify URIs (D&D-Source-Tiles in der Sidebar).
+// Persistiert ESP-seitig via /api/spotify/library. Lokal nur Mirror.
+STATE.spotifyLibrary = [];
 
 async function loadSpotifyAuth() {
   try {
@@ -3314,57 +3494,284 @@ async function loadSpotifySlots() {
     STATE.spotifySlots = {};
     (r.slots || []).forEach(m => {
       const key = `${m.device_id}_${m.slot}`;
-      STATE.spotifySlots[key] = { uri: m.spotify_uri, name: m.display_name || '' };
+      STATE.spotifySlots[key] = {
+        uri:     m.spotify_uri,
+        name:    m.display_name || '',
+        shuffle: !!m.shuffle,
+        repeat:  m.repeat || 'off',
+      };
     });
     // re-render speaker cards so the badge appears
     renderSpeakers();
   } catch(_) {}
 }
 
-async function spotifyOpenAuth() {
-  const cid = document.getElementById('spot-clientid').value.trim();
-  const sec = document.getElementById('spot-clientsecret').value.trim();
-  if (!cid || !sec) { toast('Client ID and Secret required', 'error'); return; }
-  // Stash so we can use them in the exchange step (NOT sent to ESP until
-  // exchange).
-  STATE._spotPending = { clientId: cid, clientSecret: sec,
-                         redirectUri: 'http://127.0.0.1:8888/callback' };
+// ---- Spotify-Library (Sidebar-Tile-Storage, D&D-Source) ---------------
+
+async function loadSpotifyLibrary() {
   try {
-    const r = await api('/api/spotify/auth/url?client_id='
-                        + encodeURIComponent(cid)
-                        + '&redirect_uri='
-                        + encodeURIComponent(STATE._spotPending.redirectUri));
-    window.open(r.auth_url, '_blank', 'noopener');
-    toast('Authorize in the new tab, then paste the redirected URL below', 'success');
-  } catch(e) {
-    toast('auth-url failed: ' + e.message, 'error');
+    const r = await api('/api/spotify/library');
+    STATE.spotifyLibrary = r.items || [];
+    renderSpotifyLibraryTiles();
+  } catch(_) {
+    STATE.spotifyLibrary = [];
+    renderSpotifyLibraryTiles();
   }
 }
 
-async function spotifyExchangeCode() {
-  if (!STATE._spotPending) { toast('Press "Open Spotify auth" first', 'error'); return; }
-  const url = document.getElementById('spot-callbackurl').value.trim();
-  if (!url) { toast('Paste the redirected URL', 'error'); return; }
-  // Extract ?code=...&state=...
-  const m = url.match(/[?&]code=([^&]+)/);
-  if (!m) { toast('No "code" parameter in URL', 'error'); return; }
-  const code = decodeURIComponent(m[1]);
+function renderSpotifyLibraryTiles() {
+  const grid = document.getElementById('splib-grid');
+  if (!grid) return;
+  if (!STATE.spotifyLibrary.length) {
+    grid.innerHTML = '<div class="sb-empty">No Spotify items yet. Paste a URI above.</div>';
+    return;
+  }
+  grid.innerHTML = STATE.spotifyLibrary.map((it, idx) => {
+    // Payload für D&D — eigener MIME, damit onPresetDrop diskriminieren kann.
+    const payload = JSON.stringify({
+      sixback_spotify: 1,
+      uri:     it.uri,
+      name:    it.name || it.uri,
+      shuffle: !!it.shuffle,
+      repeat:  it.repeat || 'off',
+    }).replace(/"/g,'&quot;');
+    const title = `${it.name || it.uri} — ${it.uri}` +
+                  (it.shuffle ? ' · 🔀' : '') +
+                  (it.repeat && it.repeat !== 'off' ? ` · 🔁 ${it.repeat}` : '');
+    const badge = (it.shuffle ? '🔀' : '') + (it.repeat === 'track' ? '🔂' : (it.repeat === 'context' ? '🔁' : ''));
+    return `
+      <div class="lib-tile" draggable="true" data-payload="${payload}"
+           ondragstart="onSpotifyLibraryDragStart(event)"
+           ondragend="onSpotifyLibraryDragEnd(event)"
+           title="${esc(title)} — drag onto a preset slot; ✏ to edit">
+        ${it.imageUrl
+          ? `<img class="tile-logo" src="${esc(it.imageUrl)}" alt="" loading="lazy"
+                  onerror="this.outerHTML='<div class=&quot;tile-logo-ph&quot;>🎵</div>'">`
+          : '<div class="tile-logo-ph">🎵</div>'}
+        <div class="tile-name">${esc(it.name || it.uri)}</div>
+        <div class="tile-meta">${esc(badge || it.uri.split(':')[1] || 'spotify')}
+          <button onclick="event.stopPropagation();spotifyLibraryEdit(${idx})"
+                  title="Edit this library item (name, shuffle, repeat)"
+                  style="float:right;padding:0 .3em;font-size:.9em;line-height:1;background:transparent;border:0;color:var(--mute);cursor:pointer">✏</button>
+          <button onclick="event.stopPropagation();spotifyLibraryRemove(${idx})"
+                  title="Remove from library"
+                  style="float:right;padding:0 .3em;font-size:.9em;line-height:1;background:transparent;border:0;color:var(--mute);cursor:pointer">✕</button>
+        </div>
+      </div>`;
+  }).join('');
+}
+
+async function spotifyLibraryAdd() {
+  const rawUri  = (document.getElementById('splib-uri').value || '').trim();
+  const name    = (document.getElementById('splib-name').value || '').trim();
+  const shuffle = document.getElementById('splib-shuffle').checked;
+  const repeat  = document.getElementById('splib-repeat').value;
+  if (rawUri === '') {
+    toast('Paste a Spotify URI or share URL', 'error');
+    return;
+  }
+  const uri = spotifyNormalizeUri_(rawUri) || (rawUri.startsWith('spotify:') ? rawUri : '');
+  if (!uri) {
+    toast('Unrecognized — paste spotify:album:…, spotify:playlist:…, spotify:track:… or a share URL', 'error');
+    return;
+  }
+  const btn = document.getElementById('splib-add-btn');
+  btn.disabled = true;
   try {
-    const r = await api('/api/spotify/auth/exchange', {
+    await api('/api/spotify/library', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ uri, name: name || uri, shuffle, repeat })
+    });
+    document.getElementById('splib-uri').value = '';
+    document.getElementById('splib-name').value = '';
+    document.getElementById('splib-shuffle').checked = false;
+    document.getElementById('splib-repeat').value = 'off';
+    toast('Added to library', 'success');
+    loadSpotifyLibrary();
+  } catch(e) {
+    toast('Add failed: ' + e.message, 'error');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function spotifyLibraryRemove(idx) {
+  const it = STATE.spotifyLibrary[idx];
+  if (!it) return;
+  if (!confirm(`Remove "${it.name || it.uri}" from the library?\n\nExisting slot bindings to this URI stay — they keep playing on hardware press.`)) return;
+  try {
+    await api('/api/spotify/library?uri=' + encodeURIComponent(it.uri),
+              { method: 'DELETE' });
+    toast('Removed from library', 'success');
+    loadSpotifyLibrary();
+  } catch(e) {
+    toast('Remove failed: ' + e.message, 'error');
+  }
+}
+
+// ---- D&D-Source-Handler für Spotify-Library-Tiles ---------------------
+
+function onSpotifyLibraryDragStart(ev) {
+  const el = ev.currentTarget;
+  const payloadStr = el.dataset.payload.replace(/&quot;/g,'"');
+  let payload;
+  try { payload = JSON.parse(payloadStr); } catch(_) { ev.preventDefault(); return; }
+  STATE.dragSource = { kind: 'spotify-library', payload };
+  el.classList.add('dragging');
+  ev.dataTransfer.effectAllowed = 'copy';
+  // Eigener MIME — onPresetDrop diskriminiert spotify vs tunein-preset.
+  try { ev.dataTransfer.setData('application/x-sixback-spotify+json', payloadStr); } catch(_){}
+  try { ev.dataTransfer.setData('text/plain',
+        `Spotify: ${payload.name || payload.uri}`); } catch(_){}
+}
+
+function onSpotifyLibraryDragEnd(ev) {
+  ev.currentTarget.classList.remove('dragging');
+  STATE.dragSource = null;
+  STATE._lastDragEndedAt = Date.now();
+}
+
+// Bind a Spotify-Library-Item to a Slot.
+//
+// Zwei Schreibvorgaenge sind noetig damit Hardware-Press → Spotify funktioniert:
+//   1. Spotify-Slot-Mapping (PUT /api/spotify/slot/{dev}/{slot}) — was bei
+//      sentinel-trigger gespielt wird.
+//   2. TUNEIN-Tunnel-Preset im ESP-Store (PUT /api/speaker/{dev}/preset/{slot})
+//      mit stationId=sspot{slot} + silence.mp3 — das was der Speaker pollt
+//      und worauf event_store den sspot-Pattern matched.
+// Ohne (2) zeigt der Speaker noch den alten Slot-Inhalt (TuneIn/leer/anderer
+// sspotN) und die Spotify-Mapping wird nie getriggert. Markiert dirty damit
+// der User per Push-Button die TUNEIN-Tunnel-Preset auf den Speaker schiebt.
+async function applySpotifyDrop(payload, dst) {
+  if (!payload || !payload.uri) {
+    toast('Drop ignored — no Spotify URI in payload', 'error');
+    return;
+  }
+  const niceName = payload.name || payload.uri;
+  // Check ob HW-slot bereits den TUNEIN-Tunnel-Sentinel (sspot{N}) traegt.
+  // Falls ja: kein push noetig — Mapping-Update reicht, Trigger feuert sofort.
+  // Falls nein (Slot war echter TuneIn oder leer): tunnel-preset in store +
+  // dirty markieren, damit User per Push-Button select+long-press anwirft.
+  const hwDev   = STATE.presetsByDev[dst.dev];
+  const hwSlot  = hwDev && hwDev.hw && hwDev.hw[dst.slot - 1];
+  const sentinel = `sspot${dst.slot}`;
+  const hwAlreadyTunnel = !!(hwSlot && hwSlot.source === 'TUNEIN' && hwSlot.station_id === sentinel);
+  try {
+    // (1) Spotify-Mapping eintragen.
+    await api(`/api/spotify/slot/${encodeURIComponent(dst.dev)}/${dst.slot}`, {
+      method: 'PUT',
+      headers: {'Content-Type':'application/json'},
       body: JSON.stringify({
-        code, ...STATE._spotPending
+        uri:     payload.uri,
+        name:    niceName,
+        shuffle: !!payload.shuffle,
+        repeat:  payload.repeat || 'off',
       })
     });
-    toast(`Spotify connected: ${r.display_name || r.user_id}`, 'success');
-    document.getElementById('spot-callbackurl').value = '';
+    // (2) TUNEIN-Tunnel-Preset im Store anlegen — Sentinel-stationId so dass
+    // event_store auf "/v1/playback/station/sspot{slot}" matched.
+    const tunnelBody = {
+      source:    'TUNEIN',
+      name:      `🎵 ${niceName}`,
+      stationId: sentinel,
+      streamUrl: `https://sixback.io/silence.mp3?slot=${dst.slot}&dev=${dst.dev}`,
+      imageUrl:  payload.imageUrl || '',
+    };
+    const r2 = await api(`/api/speaker/${encodeURIComponent(dst.dev)}/preset/${dst.slot}`, {
+      method: 'PUT',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(tunnelBody)
+    });
+    if (r2 && r2.ok === false) {
+      toast(`Spotify mapping saved, but tunnel-write failed: ${r2.error || 'unknown'}`, 'error');
+      loadSpotifySlots();
+      return;
+    }
+    if (hwAlreadyTunnel) {
+      // HW hat schon sspot-Tunnel — Mapping-Update wirkt sofort, kein push noetig.
+      // HW-Display-Name bleibt aber alt (Bose updated den nicht via /full); fuer
+      // den Trigger irrelevant. Wer den Namen aktualisieren will, kann manuell pushen.
+      toast(`Slot ${dst.slot}: Spotify → "${niceName}" — ready (no push needed, tunnel already on speaker).`, 'success');
+    } else {
+      markDirty(dst.dev);
+      toast(`Slot ${dst.slot}: Spotify → "${niceName}" — click push button to apply to speaker.`, 'success');
+    }
+    loadSpotifySlots();
+    loadPresetsFor(dst.dev);
+    kickPoll(dst.dev);
+  } catch(e) {
+    toast('Bind failed: ' + e.message, 'error');
+  }
+}
+
+// Persistente App-Creds: einmal speichern, dann nur noch "Connect"-Klick.
+async function loadSpotifyAppCreds() {
+  try {
+    const r = await api('/api/spotify/app-creds');
+    const el  = document.getElementById('spot-appcreds-status');
+    const stp = document.getElementById('spot-appcreds-step');
+    const cid = document.getElementById('spot-clientid');
+    document.getElementById('spot-redirect-uri').textContent =
+      'https://sixback.io/proxy/';
+    if (r.configured) {
+      el.innerHTML = `<b style="color:#9d8">✓ App-Creds stored</b>
+        — client_id <code>${esc(r.client_id || '')}</code>
+        — secret on file. Use the "Connect Spotify" button below.`;
+      if (cid && !cid.value) cid.value = r.client_id || '';
+    } else {
+      el.innerHTML = `<b style="color:#fda">○ App-Creds not yet stored</b>
+        — fill in fields below and press <i>Save App-Creds</i> once.`;
+    }
+  } catch(_) {}
+}
+
+async function spotifySaveAppCreds() {
+  const cid = document.getElementById('spot-clientid').value.trim();
+  const sec = document.getElementById('spot-clientsecret').value.trim();
+  if (!cid || !sec) { toast('Client ID and Secret required', 'error'); return; }
+  try {
+    await api('/api/spotify/app-creds', {
+      method: 'PUT',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({clientId: cid, clientSecret: sec})
+    });
+    document.getElementById('spot-clientsecret').value = '';
+    toast('App-Creds saved — survives Disconnect', 'success');
+    loadSpotifyAppCreds();
+  } catch(e) {
+    toast('Save failed: ' + e.message, 'error');
+  }
+}
+
+async function spotifyClearAppCreds() {
+  if (!confirm('Clear stored App-Creds AND disconnect? You will need to re-enter Client ID/Secret next time.')) return;
+  try {
+    await api('/api/spotify/app-creds', { method: 'DELETE' });
     document.getElementById('spot-clientid').value = '';
     document.getElementById('spot-clientsecret').value = '';
-    STATE._spotPending = null;
+    toast('App-Creds cleared', 'success');
+    loadSpotifyAppCreds();
     loadSpotifyAuth();
   } catch(e) {
-    toast('Exchange failed: ' + e.message, 'error');
+    toast('Clear failed: ' + e.message, 'error');
+  }
+}
+
+async function spotifyConnectStored() {
+  try {
+    const r = await api('/api/spotify/app-creds');
+    if (!r.configured) {
+      toast('Save App-Creds first', 'error');
+      return;
+    }
+    // Server-Default für redirect_uri ist https://sixback.io/proxy/ — keine
+    // Params nötig. Bridge auf sixback.io leitet zurück an req->host()
+    // (= dieser SixBack) via ?state=.
+    const u = await api('/api/spotify/auth/url');
+    window.location.href = u.auth_url;
+  } catch(e) {
+    toast('Connect failed: ' + e.message, 'error');
   }
 }
 
@@ -3372,6 +3779,16 @@ async function loadSpotifyTriggers() {
   try {
     const r = await api('/api/spotify/last-trigger');
     const trigs = (r.triggers || []).slice().reverse();   // neueste oben
+    // Index latest-ok-trigger per device (fuer Active-Highlight bei SPOTIFY-source).
+    STATE.spotifyLastTrigger = {};
+    for (const t of trigs) {
+      if (t.result !== 'ok') continue;
+      if (!STATE.spotifyLastTrigger[t.device_id]) {
+        STATE.spotifyLastTrigger[t.device_id] = { slot: t.slot, age_ms: t.age_ms, uri: t.uri };
+      }
+    }
+    // re-apply highlight so SPOTIFY-source slots get the playing border refreshed
+    (STATE.speakers || []).forEach(s => { if (s.device_id) applyPlayingHighlight(s.device_id); });
     const el = document.getElementById('spot-triggers-list');
     if (trigs.length === 0) {
       el.innerHTML = '<span class="mute">No preset-button triggers yet — press a preset on a speaker</span>';
@@ -3437,41 +3854,71 @@ function spotifyNormalizeUri_(input) {
   return '';
 }
 
-async function spotifySetSlot(devId, slot) {
-  const cur = STATE.spotifySlots[`${devId}_${slot}`];
-  const def = cur ? cur.uri : '';
-  const raw = prompt(
-    `Spotify URI or Share-URL for slot ${slot}\n\n` +
-    `Accepts either:\n` +
-    `  spotify:album:5F0IQXuHfTV7SBvZVnXERl\n` +
-    `  https://open.spotify.com/album/5F0IQXuHfTV7SBvZVnXERl?si=...\n` +
-    `  https://open.spotify.com/intl-de/playlist/37i9dQZF1DXcBWIGoYBM5M?...\n\n` +
-    `(Leave blank to clear the Spotify binding for this slot.)`,
-    def
-  );
-  if (raw === null) return; // cancel
-  const trimmed = raw.trim();
+// Library-Item-Edit: reuses modal-spotify; spotifyEditCtx={kind:'library',
+// origUri} fuer Save/Clear-Branch.
+function spotifyLibraryEdit(idx) {
+  const it = (STATE.spotifyLibrary || [])[idx];
+  if (!it) return;
+  STATE.spotifyEditCtx = { kind: 'library', origUri: it.uri };
+  document.getElementById('sp-modal-title').textContent = 'Edit library item';
+  document.getElementById('sp-uri').value     = it.uri  || '';
+  document.getElementById('sp-name').value    = it.name || '';
+  document.getElementById('sp-shuffle').checked = !!it.shuffle;
+  document.getElementById('sp-repeat').value  = it.repeat || 'off';
+  openModal('modal-spotify');
+  setTimeout(() => { try { document.getElementById('sp-name').focus(); } catch(_){} }, 50);
+}
+
+async function spotifySaveSlotModal() {
+  const ctx = STATE.spotifyEditCtx;
+  if (!ctx || ctx.kind !== 'library') {
+    toast('Edit-context lost', 'error'); return;
+  }
+  const raw     = (document.getElementById('sp-uri').value || '').trim();
+  const name    = (document.getElementById('sp-name').value || '').trim();
+  const shuffle = document.getElementById('sp-shuffle').checked;
+  const repeat  = document.getElementById('sp-repeat').value;
+  if (raw === '') {
+    toast('Paste a Spotify URI or share URL (or click Delete)', 'error');
+    return;
+  }
+  if (!raw.startsWith('spotify:') && !spotifyNormalizeUri_(raw)) {
+    toast('Unrecognized — paste a Spotify URI or share URL', 'error');
+    return;
+  }
+  const uri = spotifyNormalizeUri_(raw) || raw;
   try {
-    if (trimmed === '') {
-      await api(`/api/spotify/slot/${devId}/${slot}`, { method: 'DELETE' });
-      toast(`Slot ${slot}: Spotify binding cleared`, 'success');
-    } else if (!trimmed.startsWith('spotify:') && !spotifyNormalizeUri_(trimmed)) {
-      toast('Unrecognized — paste a Spotify URI or share URL', 'error');
-      return;
-    } else {
-      const uri = spotifyNormalizeUri_(trimmed) || trimmed;
-      const name = prompt('Display name (optional, UI only):',
-                          cur ? cur.name : '') || '';
-      await api(`/api/spotify/slot/${devId}/${slot}`, {
-        method: 'PUT',
-        headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({ uri, name })
-      });
-      toast(`Slot ${slot}: bound to ${uri}`, 'success');
+    // POST upsert nach uri. Wenn der User die URI geaendert hat, wuerde
+    // sonst der alte Eintrag dranbleiben — daher zusaetzlich loeschen.
+    if (ctx.origUri && ctx.origUri !== uri) {
+      try {
+        await api(`/api/spotify/library?uri=${encodeURIComponent(ctx.origUri)}`, { method: 'DELETE' });
+      } catch(_) { /* nicht-fatal */ }
     }
-    loadSpotifySlots();
+    await api('/api/spotify/library', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ uri, name: name || uri, shuffle, repeat })
+    });
+    toast('Library item saved', 'success');
+    closeModal('modal-spotify');
+    loadSpotifyLibrary();
   } catch(e) {
-    toast('Set Spotify slot failed: ' + e.message, 'error');
+    toast('Save failed: ' + e.message, 'error');
+  }
+}
+
+async function spotifyClearSlotModal() {
+  const ctx = STATE.spotifyEditCtx;
+  if (!ctx || ctx.kind !== 'library' || !ctx.origUri) return;
+  if (!confirm(`Delete "${ctx.origUri}" from the library?\n\nExisting slot bindings to this URI stay active on speakers.`)) return;
+  try {
+    await api(`/api/spotify/library?uri=${encodeURIComponent(ctx.origUri)}`, { method: 'DELETE' });
+    toast('Removed from library', 'success');
+    closeModal('modal-spotify');
+    loadSpotifyLibrary();
+  } catch(e) {
+    toast('Delete failed: ' + e.message, 'error');
   }
 }
 
@@ -3495,8 +3942,10 @@ setInterval(loadStatus, 10000);
 setTimeout(pollOnline, 1500);
 // Spotify status — load once + refresh every 60s to show fresh expiry.
 loadSpotifyAuth();
+loadSpotifyAppCreds();
 loadSpotifySlots();
 loadSpotifyTriggers();
+loadSpotifyLibrary();
 setInterval(loadSpotifyAuth, 60000);
 setInterval(loadSpotifyTriggers, 5000);   // alle 5s damit User schnell sieht ob trigger angekommen
 </script>
@@ -3516,7 +3965,8 @@ setInterval(loadSpotifyTriggers, 5000);   // alle 5s damit User schnell sieht ob
 </div>
 
 <footer style="margin-top:3em;padding-top:1em;border-top:1px solid #e1ddd2;color:#777;font-size:.8em;text-align:center">
-  SixBack &copy; 2026 Dirk Tostmann &middot;
+  <a href="https://sixback.io/" target="_blank" rel="noopener" style="color:#777">SixBack</a> &copy; 2026
+  <a href="mailto:tostmann@gmail.com" style="color:#777">Dirk Tostmann</a> &middot;
   <a href="https://polyformproject.org/licenses/noncommercial/1.0.0/" target="_blank" rel="noopener" style="color:#777">PolyForm Noncommercial 1.0.0</a> &middot;
   Personal/hobby/research use only &middot;
   Not affiliated with Bose Corporation

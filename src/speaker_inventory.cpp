@@ -167,7 +167,7 @@ void SpeakerInventory::saveToNVS() {
             }
         }
     }
-    nvsSaveJson(NVS_NS, NVS_KEY, doc);
+    nvsSaveJsonWithCleanup(NVS_NS, NVS_KEY, doc);
 }
 
 void SpeakerInventory::mergeSpeaker_(const Speaker& s) {
@@ -491,6 +491,39 @@ void SpeakerInventory::refreshMigrationStatus() {
     String myBase = "http://" + WiFi.localIP().toString() + ":" + String(BOSE_HTTP_PORT);
     for (auto& s : work) {
         s.status = detectStatus(s.ip, myBase, &s.cloudUrl);
+    }
+    // Stale-view-fix (2026-05-26): die auto-release-Pruefung (s.u.) skipt
+    // bei cloudUrl=="" — genau das ist aber der State waehrend ein Speaker
+    // mid-Reboot von einem Migrate ist (OFFLINE/SETTLING). Ohne Retry-Pass
+    // sieht die source-stick minutenlang "owned=true" obwohl der Speaker
+    // schon auf einer anderen Cloud landed. Wir retryen daher bis 30s
+    // (3 x 10s) genau die Speaker die WIR noch als owned tracken UND deren
+    // letzter probe OFFLINE/SETTLING war — Symptom mid-Bose-Reboot.
+    // Speaker mit MIGRATED/NOT_MIGRATED-Status haben cloudUrl gesetzt und
+    // brauchen keinen Retry. Speaker die wir nie owned haben sind nicht
+    // unsere Verantwortung — kein retry-cost.
+    for (int retry = 1; retry <= 3; ++retry) {
+        std::vector<size_t> retryIdx;
+        for (size_t i = 0; i < work.size(); ++i) {
+            if (work[i].cloudUrl.length() > 0) continue;
+            if (work[i].status != MigrationStatus::SETTLING &&
+                work[i].status != MigrationStatus::OFFLINE) continue;
+            bool ownedNow = false;
+            {
+                LockGuard g(*this);
+                Speaker* p = findById(work[i].deviceId);
+                if (p) ownedNow = p->ownedByUs;
+            }
+            if (!ownedNow) continue;
+            retryIdx.push_back(i);
+        }
+        if (retryIdx.empty()) break;
+        Serial.printf("[inv] stale-view-fix: %u owned-stale speaker(s), retry %d/3 in 10s\n",
+                      (unsigned)retryIdx.size(), retry);
+        delay(10000);
+        for (size_t i : retryIdx) {
+            work[i].status = detectStatus(work[i].ip, myBase, &work[i].cloudUrl);
+        }
     }
     LockGuard g(*this);
     for (auto& upd : work) {

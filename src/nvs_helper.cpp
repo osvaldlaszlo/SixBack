@@ -19,9 +19,19 @@ bool nvsSaveJson(const char* ns, const char* key, JsonDocument& doc) {
     String s;
     serializeJson(doc, s);
     Preferences p;
-    if (!p.begin(ns, false)) return false;
+    if (!p.begin(ns, false)) {
+        Serial.printf("[nvs-save] FAIL begin ns=%s key=%s\n", ns, key);
+        return false;
+    }
     size_t n = p.putString(key, s);
     p.end();
+    if (n == 0) {
+        Serial.printf("[nvs-save] FAIL putString ns=%s key=%s json_len=%u (returned 0)\n",
+                      ns, key, (unsigned)s.length());
+    } else {
+        Serial.printf("[nvs-save] ok ns=%s key=%s json_len=%u wrote=%u\n",
+                      ns, key, (unsigned)s.length(), (unsigned)n);
+    }
     return n > 0;
 }
 
@@ -30,6 +40,68 @@ bool nvsErase(const char* ns, const char* key) {
     if (!p.begin(ns, false)) return false;
     bool ok = p.remove(key);
     p.end();
+    return ok;
+}
+
+bool nvsEraseAllInNamespace(const char* ns) {
+    nvs_handle_t h;
+    if (nvs_open(ns, NVS_READWRITE, &h) != ESP_OK) return false;
+    esp_err_t e1 = nvs_erase_all(h);
+    esp_err_t e2 = nvs_commit(h);
+    nvs_close(h);
+    return e1 == ESP_OK && e2 == ESP_OK;
+}
+
+void nvsGetStatsJson(JsonDocument& out) {
+    nvs_stats_t st{};
+    esp_err_t e = nvs_get_stats(NULL, &st);
+    if (e != ESP_OK) {
+        out["error"] = "nvs_get_stats failed";
+        return;
+    }
+    out["used_entries"]      = (uint32_t)st.used_entries;
+    out["free_entries"]      = (uint32_t)st.free_entries;
+    out["total_entries"]     = (uint32_t)st.total_entries;
+    out["namespace_count"]   = (uint32_t)st.namespace_count;
+    out["percent_used"]      = (st.total_entries > 0)
+                                ? (100.0f * st.used_entries / st.total_entries)
+                                : 0.0f;
+}
+
+bool nvsSaveJsonWithCleanup(const char* ns, const char* key, JsonDocument& doc) {
+    if (nvsSaveJson(ns, key, doc)) return true;
+    Serial.printf("[nvs-cleanup] %s/%s save fail — pass1 purging caches + retry\n", ns, key);
+    // Pass 1: Cache-Namespaces wegpurgen (regenerable, kein User-Verlust).
+    nvsEraseAllInNamespace("sixback-tune");      // TuneIn-Resolver-Cache
+    nvsEraseAllInNamespace("sixback-sys");       // Health/Counters
+    if (nvsSaveJson(ns, key, doc)) {
+        Serial.printf("[nvs-cleanup] pass1 retry %s/%s -> OK\n", ns, key);
+        return true;
+    }
+    // Pass 2: aggressivere Liste — Snapshot-Persistenz, Keepalive-State.
+    // Beides regenerable beim naechsten Pre-Migrate / Boot. Loescht nicht
+    // sixback-{pre,inv,spot,wifi,auto,net} — die haben User-Daten.
+    Serial.printf("[nvs-cleanup] %s/%s pass1-fail — pass2 wider purge\n", ns, key);
+    nvsEraseAllInNamespace("sixback-snapshot");  // Diag-Snapshots im Flash
+    nvsEraseAllInNamespace("sixback-keepalive"); // Marge-Keepalive-State
+    nvsEraseAllInNamespace("sixback-c");         // Captive-Stub-State
+    nvsEraseAllInNamespace("sixback-s");         // Speaker-Discovery-Cache
+    nvsEraseAllInNamespace("sixback-esp");       // ESP-Web-Tools-Cache (falls vorhanden)
+    if (nvsSaveJson(ns, key, doc)) {
+        Serial.printf("[nvs-cleanup] pass2 retry %s/%s -> OK (aggressive purge)\n", ns, key);
+        return true;
+    }
+    // Pass 3: den ZIEL-Key explizit loeschen + retry. Hilft wenn NVS-internes
+    // GC die alte Version noch nicht reclaim't hat.
+    Serial.printf("[nvs-cleanup] %s/%s pass2-fail — pass3 erase target-key + retry\n", ns, key);
+    {
+        Preferences p;
+        if (p.begin(ns, false)) { p.remove(key); p.end(); }
+    }
+    bool ok = nvsSaveJson(ns, key, doc);
+    Serial.printf("[nvs-cleanup] pass3 retry %s/%s -> %s%s\n", ns, key,
+                  ok ? "OK" : "STILL-FAIL",
+                  ok ? "" : " — NVS partition severely fragmented");
     return ok;
 }
 

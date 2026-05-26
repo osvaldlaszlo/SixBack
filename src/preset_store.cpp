@@ -101,7 +101,7 @@ void PresetStore::loadFromNVS() {
                   (unsigned)speakers_.size());
 }
 
-void PresetStore::saveToNVS() {
+bool PresetStore::saveToNVS() {
     LockGuard g(*this);
     JsonDocument doc;
     JsonArray arr = doc["speakers"].to<JsonArray>();
@@ -125,7 +125,7 @@ void PresetStore::saveToNVS() {
             }
         }
     }
-    nvsSaveJson(NVS_NS, NVS_KEY, doc);
+    return nvsSaveJsonWithCleanup(NVS_NS, NVS_KEY, doc);
 }
 
 PresetStore::PerSpeaker* PresetStore::findOrCreate_(const String& deviceId) {
@@ -180,8 +180,7 @@ bool PresetStore::set(const String& deviceId, const Preset& p) {
     if (p.slot < 1 || p.slot > 6) return false;
     auto* s = findOrCreate_(deviceId);
     s->slots[p.slot - 1] = p;
-    saveToNVS();
-    return true;
+    return saveToNVS();
 }
 
 bool PresetStore::setSlots(const String& deviceId, const std::vector<Preset>& presets) {
@@ -195,8 +194,8 @@ bool PresetStore::setSlots(const String& deviceId, const std::vector<Preset>& pr
         s->slots[p.slot - 1].slot = p.slot;  // defensiv re-stamp slot
         changed = true;
     }
-    if (changed) saveToNVS();
-    return changed;
+    if (changed) return saveToNVS();
+    return false;
 }
 
 bool PresetStore::clear(const String& deviceId, uint8_t slot) {
@@ -335,7 +334,14 @@ String PresetStore::toBoseXml(const String& deviceId) {
             out += String(p.slot);
             out += "\"><ContentItem source=\"";
             out += presetSourceToStr(p.source);  // enum-Konst — safe ohne Escape
-            out += "\" type=\"stationurl\" location=\"";
+            // type-Attribute haengt von der Source ab — siehe
+            // reference_bose_contentitem_type_per_source: TUNEIN braucht
+            // "stationurl", LOCAL_INTERNET_RADIO braucht "url". Falscher type
+            // -> Speaker akzeptiert das Preset zwar, weigert sich aber bei
+            // /select intern (kein Audio) und u.U. bei Hardware-Press.
+            out += "\" type=\"";
+            out += (p.source == PresetSource::TUNEIN) ? "stationurl" : "url";
+            out += "\" location=\"";
             if (p.source == PresetSource::TUNEIN) {
                 out += "/v1/playback/station/";
                 out += xmlEscape_(p.stationId);

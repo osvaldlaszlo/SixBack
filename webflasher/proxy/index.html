@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>SixBack OAuth Proxy</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex">
+<style>
+  body { font-family: system-ui, sans-serif; background: #1a1a1a; color: #eee;
+         padding: 2em; max-width: 640px; margin: 0 auto; line-height: 1.5; }
+  h1 { color: #9d8; margin-bottom: .3em; }
+  code { background: #333; padding: .15em .4em; border-radius: 3px; font-size: .9em; }
+  .ok   { color: #9d8; }
+  .err  { color: #f88; }
+  .hint { color: #888; font-size: .9em; margin-top: 1em; }
+  a    { color: #88c; }
+  button { background: #88c; color: #111; border: 0; padding: .5em 1em;
+           border-radius: 4px; cursor: pointer; font-weight: 600; }
+</style>
+</head>
+<body>
+<h1>SixBack OAuth Proxy</h1>
+<div id="msg">Initialisiere…</div>
+
+<p class="hint">
+  Diese Seite leitet einen OAuth-Callback (von Spotify, ggf. andere Provider)
+  zurück an deine lokale SixBack-Instanz im LAN. Die Seite ist <b>rein
+  statisch</b> — kein Server-Code, kein Logging. Code + state werden nur im
+  Browser ausgewertet und per Top-Level-Navigation an das LAN-Ziel weitergereicht.
+</p>
+
+<script>
+(function () {
+  const msg  = document.getElementById('msg');
+  const q    = new URLSearchParams(window.location.search);
+  const code  = q.get('code');
+  const state = q.get('state');
+  const err   = q.get('error');
+
+  function fail(text) {
+    msg.innerHTML = '<b class="err">✗ ' + text + '</b>';
+  }
+
+  if (err) {
+    fail('OAuth-Provider meldet Fehler: <code>' + err + '</code>');
+    return;
+  }
+  if (!code) {
+    fail('Kein <code>?code=</code> in URL — diese Seite erwartet einen OAuth-Callback.');
+    return;
+  }
+  if (!state) {
+    fail('Kein <code>?state=</code> in URL — Ziel-URL unbekannt. ' +
+         'SixBack muss <code>state=&lt;lan-callback-url&gt;</code> mitgeben.');
+    return;
+  }
+
+  // Sicherheits-Filter: state MUSS http:// auf LAN-Host sein.
+  // Verhindert dass die Seite als open-redirect missbraucht wird.
+  let target;
+  try { target = new URL(state); }
+  catch (e) { fail('state ist keine gültige URL: <code>' + state + '</code>'); return; }
+
+  const okHost =
+       target.hostname.endsWith('.local')
+    || /^10\./.test(target.hostname)
+    || /^192\.168\./.test(target.hostname)
+    || /^172\.(1[6-9]|2[0-9]|3[01])\./.test(target.hostname);
+
+  if (target.protocol !== 'http:' || !okHost) {
+    fail('state-Hostname nicht im LAN-Bereich: <code>' + target.hostname +
+         '</code> (erlaubt: *.local, 10.x, 192.168.x, 172.16-31.x; nur http://)');
+    return;
+  }
+
+  // Code in die Target-URL einbauen + navigieren.
+  // Falls target schon eigene Query hat, append; sonst neu setzen.
+  target.searchParams.set('code', code);
+  const finalUrl = target.toString();
+
+  msg.innerHTML =
+    '<b class="ok">✓ Code empfangen</b>' +
+    '<p>Leite weiter an: <code>' + finalUrl.replace(/&/g, '&amp;') + '</code></p>' +
+    '<p><button onclick="window.location.href=' + JSON.stringify(finalUrl) + '">' +
+    'Manuell weiterleiten</button> ' +
+    '<span class="hint">(falls Auto-Redirect nicht klappt)</span></p>';
+
+  // Auto-Redirect nach 800 ms damit User die Meldung kurz sieht.
+  setTimeout(() => { window.location.href = finalUrl; }, 800);
+})();
+</script>
+</body>
+</html>

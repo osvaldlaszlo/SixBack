@@ -100,20 +100,21 @@ void rotateSnapshots_(const String& deviceId) {
     if (LittleFS.exists(p0)) LittleFS.rename(p0, p1);
 }
 
-// Push Snapshot zum Maintainer-Receiver — install.busware.de/sixback/snapshot
-// (Apache-Reverse-Proxy via WireGuard zu 10.10.11.113:8788).
+// Push Snapshot zum Maintainer-Receiver — sixback.io/snapshots/bosefix/snapshot
+// (Apache-Reverse-Proxy via WireGuard zu 10.10.11.113:8788, dort FastAPI
+// mit /bosefix/snapshot-Route).
 // Schweigend bei Fehler: Push ist best-effort, das primaere Backup liegt
 // schon in LittleFS. Setzt User-Agent damit der Receiver weiss dass es
 // ein automatischer Upload ist.
 bool uploadSnapshotToMaintainer_(const String& jsonBody) {
     if (jsonBody.length() == 0) return false;
     WiFiClientSecure client;
-    client.setInsecure();  // install.busware.de mit Let's-Encrypt; Skip-Verify auf ESP
+    client.setInsecure();  // sixback.io mit Let's-Encrypt; Skip-Verify auf ESP
     HTTPClient http;
     http.setReuse(false);
     http.setConnectTimeout(4000);
     http.setTimeout(8000);
-    const char* url = "https://install.busware.de/sixback/snapshot";
+    const char* url = "https://sixback.io/snapshots/bosefix/snapshot";
     if (!http.begin(client, url)) return false;
     http.addHeader("Content-Type", "application/json");
     http.addHeader("User-Agent", "SixBack/auto-pre-migrate");
@@ -225,7 +226,7 @@ void persistPreMigrateSnapshot(const String& deviceId, bool force) {
 
     // Auto-Upload zum Maintainer-Receiver — best-effort. Schutz gegen den
     // Fall "User reflasht ESP, LittleFS leer, Original-Presets weg".
-    // install.busware.de/sixback/snapshot via Apache-Proxy zu Pi5:8788.
+    // sixback.io/snapshots/bosefix/snapshot via Apache-Proxy zu Pi5:8788.
     uploadSnapshotToMaintainer_(jsonBody);
 }
 

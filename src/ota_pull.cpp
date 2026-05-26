@@ -19,11 +19,12 @@ namespace ota {
 
 namespace {
 
-// Manifest-Quelle. Aus dem build_release.sh / install.busware.de-Setup
-// bekannt; absichtlich hardcoded statt konfigurierbar, weil das die
-// einzige Distributionsquelle ist (vgl. reference_busware_install_host).
+// Manifest-Quelle. sixback.io ist seit 2026-05-25 die kanonische Domain
+// (siehe reference_sixback_io_domain). Apache-vhost auf demselben Hetzner-Host
+// wie install.busware.de — DocumentRoot /var/www/install/sixback/, also
+// 1:1 Spiegel ohne /sixback/-Prefix.
 constexpr const char* kManifestUrl =
-    "https://install.busware.de/sixback/manifest.json";
+    "https://sixback.io/manifest.json";
 
 // Chip-spezifischer Datei-Name fuer firmware.bin oder littlefs.bin.
 // build_release.sh erzeugt:
@@ -80,7 +81,7 @@ void setError_(const String& msg) {
 // AVAILABLE oder IDLE. Auf Fehler: state ERROR_.
 void doCheck_() {
     WiFiClientSecure tls;
-    tls.setInsecure();  // install.busware.de hat ein gueltiges Cert, aber
+    tls.setInsecure();  // sixback.io hat ein gueltiges Let's-Encrypt-Cert, aber
                         // wir wollen keinen Cert-Bundle mit-flashen muessen.
     HTTPClient http;
     http.setReuse(false);
@@ -143,13 +144,13 @@ void doCheck_() {
                   reason);
 }
 
-// Pull eine Datei aus install.busware.de + schreibe sie via Update.begin
-// in den angegebenen Update-Bereich (U_FLASH = firmware-slot, U_SPIFFS =
+// Pull eine Datei aus sixback.io + schreibe sie via Update.begin in den
+// angegebenen Update-Bereich (U_FLASH = firmware-slot, U_SPIFFS =
 // LittleFS-Partition). Setzt unterwegs g_status.progress + g_status.total.
 // Return true on success.
 bool pullAndFlashOne_(const char* path, int updateType,
                       const char* phaseName, uint8_t phaseIdx) {
-    String url = "https://install.busware.de/sixback/";
+    String url = "https://sixback.io/";
     url += path;
     Serial.printf("[ota-pull] phase %d/%u start: %s -> %s\n",
                   phaseIdx, (unsigned)g_status.phaseN, url.c_str(),
