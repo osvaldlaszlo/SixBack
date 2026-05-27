@@ -1,0 +1,79 @@
+name: 🐛 Bug Report
+description: Report something that doesn't work as expected
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug report. Even partial information is helpful —
+        fill in what you can.
+
+  - type: input
+    id: version
+    attributes:
+      label: SixBack firmware version
+      description: |
+        Shown in the WebUI footer, or via `GET /api/status` → `version` field.
+        Example: `0.7.924`
+      placeholder: "0.7.x"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: hardware
+    attributes:
+      label: ESP32 hardware variant
+      options:
+        - ESP32-S3 (recommended, PSRAM)
+        - ESP32-C6
+        - ESP32-C3
+        - ESP32 (classic)
+        - other / unsure
+    validations:
+      required: true
+
+  - type: textarea
+    id: speakers
+    attributes:
+      label: Bose speaker(s) involved
+      description: |
+        Model + firmware. Find via the speaker's BMX `/info` endpoint or
+        the SixBack speaker card. Example: `SoundTouch 20, FW 27.0.3.46298`.
+      placeholder: "SoundTouch 20, FW 27.0.3.46298"
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Describe the unexpected behaviour.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect to happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open WebUI on http://<sixback-ip>/
+        2. Drag a radio station onto preset 3
+        3. Observe that ...
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / screenshots / diagnostic snapshot
+      description: |
+        Helpful artefacts (any combination):
+        - Serial output (USB-CDC) if available
+        - Browser console errors (F12 → Console)
+        - Diagnostic snapshot: speaker card → "Download diagnostic snapshot"
+          → attach the resulting JSON
+        - Screenshots of the WebUI state
+      placeholder: "Paste logs or attach files / screenshots"

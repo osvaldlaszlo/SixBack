@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 💬 Ask a question / discuss
+    url: https://github.com/tostmann/SixBack/discussions
+    about: General questions, setup help, ideas — please use Discussions rather than Issues.
+  - name: 🇩🇪 FHEM-Forum (Deutsch)
+    url: https://forum.fhem.de/index.php?topic=144729.0
+    about: German FHEM community, BMX/SoundTouch + SixBack thread.
+  - name: 📦 Install / flash
+    url: https://install.busware.de/sixback/
+    about: Web-flasher landing page — flash a fresh ESP32 stick from the browser.

@@ -1,0 +1,39 @@
+name: ✨ Feature Request
+description: Suggest a new feature or enhancement
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing, please consider whether the feature fits SixBack's scope:
+        local-first, BMX-API compatible, no Bose-cloud dependency. New external
+        services / adapters are usually opt-in only.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / motivation
+      description: Which concrete user need does this address?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Workarounds you already tried, or other designs you ruled out.
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: |
+        Mockups, links to related discussions, hardware details, anything that
+        helps frame the request.
