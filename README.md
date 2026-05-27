@@ -17,7 +17,7 @@ No subscription, no account, no Bose servers.  One USB stick on your LAN.
 > functionality is preserved; the rename reflects the project's identity
 > independent of any Bose trademark.
 
-## Status (v0.7.7)
+## Status (v0.8.0)
 
 | Component                                                            | State                                                                                                              |
 | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
@@ -31,6 +31,9 @@ No subscription, no account, no Bose servers.  One USB stick on your LAN.
 | **Preset-loss defense** (Defense-in-Depth)                           | working — `handleMigrate` pre-imports; `/presets` and `account/full` return 404 when store empty; TUNEIN source-block carries `username=TuneIn` so `sourceAccount` survives every sync |
 | **Opaque-source passthrough** — DLNA / UPnP / Bluetooth presets      | working — original `<ContentItem>` captured at import and replayed 1:1; `STORED_MUSIC` and `STORED_MUSIC_MEDIA_RENDERER` declared in `accountSources`; serialized as Bosman-schema `<preset>` blocks with `<location>` + `<source>` reference (v0.6.537) |
 | **DLNA preset workflow** end-to-end                                  | working — verified on SoundTouch 30 with 6/6 OPAQUE slots reboot-persistent (2026-05-21)                           |
+| **DLNA browse** in the WebUI (v0.8.0)                                | working — sidebar tab with speaker + server pickers, breadcrumb, drag-track-onto-slot; UPnP ContentDirectory:Browse SOAP runs in a small Pi5/Apache-fronted proxy so the firmware stays thin; tested against MiniDLNA, Fritz!Mediaserver |
+| **DLNA preset recording** via drag-to-slot (v0.8.0)                  | working — `POST /api/speaker/{id}/dlna/preset/{slot}` emulates long-press (`/select` STORED_MUSIC ContentItem → 8 s settle → `/key` press+release) then re-imports `/presets` so the new OPAQUE slot is captured into the store with its `rawContentItem`; peer-aware refuse (HTTP 409) when the speaker is owned by another SixBack |
+| **Migrate / Reboot progress modal** (v0.8.0)                         | working — both speaker actions open the same step-by-step progress dialog used by Refresh; status transitions are tracked by polling `/api/speakers`, with explicit timeout + last-status surfacing if the speaker never returns |
 | Speaker telnet bootstrap (`sys configuration …` via TCP 17000)       | working                                                                                                            |
 | **Migrate verify post-boot** (v0.7.632)                              | working — second `getpdo` after `waitForSpeakerBack_`; mismatch → `MIGRATE_FAILED` instead of silent `MIGRATED`    |
 | Auto-import existing presets via BMX `/presets`                      | working                                                                                                            |
@@ -50,7 +53,7 @@ No subscription, no account, no Bose servers.  One USB stick on your LAN.
 | WiFi provisioning — Improv-Serial (idle-window) + Captive AP         | working — both armed in parallel on cold boot                                                                      |
 | **ESP32-C6 WPA2 reliability**                                        | working — `WiFi.setSleep(WIFI_PS_NONE)` + `setAutoReconnect(true)` applied **before** `WiFi.begin()`; closes 4-Way-Handshake-Timeout on WPA2-Mixed APs |
 | System health — Task-WDT, WiFi / heap watchdog, crash counter, self-ping | working                                                                                                        |
-| Builds for **ESP32 / ESP32-S3 ★ / ESP32-C3 / ESP32-C6**              | working — S3 is the recommended target                                                                             |
+| Builds for **ESP32-S3 ★ / ESP32-C3 / ESP32-C6**                      | working — S3 is the recommended target; ESP32-classic temporarily dropped from v0.8.0 (Web-UI growth exceeded the 256 KB spiffs slot in `partitions-4mb.csv` — followup will rebalance the symmetric 4 MB layout) |
 | ESP-Web-Tools landing page (auto-detects chip)                       | working — <https://sixback.io/>                                                                                    |
 
 ## Install (recommended)
@@ -140,7 +143,7 @@ page auto-redirects to the device's freshly assigned LAN IP via
 | Chip          | Board reference                  | Flash | Notes                                                            |
 | ------------- | -------------------------------- | ----- | ---------------------------------------------------------------- |
 | **ESP32-S3 ★**| `esp32-s3-devkitc-1` (N16R8V)    | 16 MB | **recommended** — 8 MB PSRAM, mature WiFi 5 stack, comfortable flash headroom |
-| ESP32         | `esp32dev` (DevKitC-1)           | 4 MB  | classic — biggest hobby installed base; external USB-UART        |
+| ESP32         | `esp32dev` (DevKitC-1)           | 4 MB  | classic — source build works; **not shipped in v0.8.0** while the symmetric 4 MB partition layout (1.81 MB app slots, 256 KB spiffs) gets rebalanced to fit the grown Web UI |
 | ESP32-C3      | `esp32-c3-devkitm-1`             | 4 MB  | flashes over the chip's built-in USB-Serial-JTAG                 |
 | ESP32-C6      | `esp32-c6-devkitc-1`             | 4 MB  | WiFi 6 — works, but cold-start discovery occasionally drops SSDP-multicast packets and rare HTTP-server hangs need a reset |
 
@@ -152,9 +155,12 @@ and produced one HTTP-server hang that recovered only after a hardware
 reset.  The extra ~5 € for an S3-DevKitC-1-N16R8 buys noticeable
 robustness and ~40 % free flash for future features.
 
-The other three targets are fully functional and stay built/published on
-every release — the C3 and C6 currently sit at ~95 % flash use, so
-adding heavy features needs care.
+C3 and C6 are fully functional and stay built/published on every release;
+both sit at ~52 % flash use under v0.8.0 (single-app no-OTA layout, 3.5 MB
+slot, ~1.75 MB image).  ESP32-classic builds from source but is not
+published in v0.8.0 — the symmetric 4 MB layout's 256 KB spiffs slot can
+no longer hold the gzipped Web UI plus the Spotify-trigger silence stub;
+a follow-up will rebalance partitions.
 
 All four targets share the same source tree and the same Web UI; the
 PlatformIO `extends = common` mechanism keeps the per-target diff small
