@@ -1591,6 +1591,238 @@ void handleNowPlayingLive(AsyncWebServerRequest* req) {
 }
 
 // -----------------------------------------------------------------------------
+// POST /api/speaker/{id}/dlna/preset/{slot}
+//   Records an OPAQUE STORED_MUSIC preset by emulating what a user would do
+//   at the speaker (long-press): /select the DLNA ContentItem -> wait for
+//   stream stabilization -> /key press PRESET_N + sleep + release. After
+//   the long-press completes the speaker has the new preset locally, so
+//   we re-pull /presets via importPresetsFromSpeaker_ to capture the
+//   rawContentItem into PresetStore.
+//
+// Body JSON:
+//   { "uuid":        "4d696e69-444c-...",        // DLNA server UUID
+//     "object_id":   "1$4",                       // DIDL ObjectID
+//     "name":        "All Music",                 // <itemName>
+//     "type":        "dir" | "track" }            // container vs item
+//
+// Runs in a one-shot FreeRTOS task; the handler returns 202 immediately
+// because the long-press alone burns ~12 s and would block AsyncWebServer.
+// -----------------------------------------------------------------------------
+struct RecordDlnaJob_ {
+    String deviceId;
+    String spIp;
+    String uuid;
+    String objectId;
+    String itemName;
+    String itemType;     // "dir" / "track"
+    uint8_t slot;
+};
+
+static void recordDlnaWorker_(void* arg) {
+    RecordDlnaJob_* job = (RecordDlnaJob_*)arg;
+
+    // /select the STORED_MUSIC ContentItem so the speaker switches source +
+    // starts streaming the container/track. Long-press would otherwise save
+    // whatever was previously playing.
+    {
+        HTTPClient http;
+        http.setReuse(false);
+        String url = "http://" + job->spIp + ":" + String(BOSE_BMX_PORT) + "/select";
+        int selectCode = -1;
+        if (http.begin(url)) {
+            String ci = "<ContentItem source=\"STORED_MUSIC\" sourceAccount=\"";
+            ci += job->uuid; ci += "/0\" location=\"";
+            ci += job->objectId;
+            ci += "\" isPresetable=\"true\" type=\"";
+            ci += job->itemType.length() ? job->itemType : String("dir");
+            ci += "\"><itemName>";
+            ci += job->itemName;
+            ci += "</itemName></ContentItem>";
+            http.addHeader("Content-Type", "text/xml");
+            selectCode = http.POST(ci);
+            http.end();
+        }
+        if (selectCode != 200) {
+            Serial.printf("[bg:dlna-record] %s slot %u ABORT — /select=%d\n",
+                          job->spIp.c_str(), job->slot, selectCode);
+            delete job;
+            vTaskDelete(nullptr);
+            return;
+        }
+    }
+
+    // Wait for /now_playing to actually switch — mirrors doPush_ rationale.
+    // DLNA stream-start can be slow (server has to seek + open file).
+    delay(8000);
+
+    auto sendKey = [&](const String& state) {
+        HTTPClient h;
+        h.setReuse(false);
+        String u = "http://" + job->spIp + ":" + String(BOSE_BMX_PORT) + "/key";
+        if (!h.begin(u)) return -1;
+        h.addHeader("Content-Type", "text/xml");
+        String body = "<key state=\"" + state + "\" sender=\"Gabbo\">PRESET_" +
+                      String(job->slot) + "</key>";
+        int rc = h.POST(body);
+        h.end();
+        return rc;
+    };
+    int pressRc   = sendKey("press");
+    delay(2500);  // > 2 s = long-press, < 0.5 s = short-press (PLAY)
+    int releaseRc = sendKey("release");
+    Serial.printf("[bg:dlna-record] %s slot %u select=200 press=%d release=%d\n",
+                  job->spIp.c_str(), job->slot, pressRc, releaseRc);
+
+    // Speaker needs a moment to flush /presets after the long-press recording.
+    delay(1500);
+
+    // Pull /presets back into PresetStore — this captures the new OPAQUE slot
+    // with its rawContentItem. We pass null JsonArrays because we have no
+    // response to enrich (background task).
+    int countOk = 0, countAban = 0, httpCode = 0;
+    int rc = importPresetsFromSpeaker_(job->deviceId, countOk, countAban,
+                                        httpCode, JsonArray(), JsonArray());
+    Serial.printf("[bg:dlna-record] %s import-after-record rc=%d ok=%d aban=%d\n",
+                  job->spIp.c_str(), rc, countOk, countAban);
+
+    delete job;
+    vTaskDelete(nullptr);
+}
+
+void handleDlnaRecordPreset(AsyncWebServerRequest* req, JsonDocument& body) {
+    String id = req->pathArg(0);
+    uint8_t slot = req->pathArg(1).toInt();
+    if (slot < 1 || slot > 6) {
+        req->send(400, "application/json", "{\"error\":\"slot 1..6\"}");
+        return;
+    }
+    String uuid     = (const char*)(body["uuid"]      | "");
+    String objectId = (const char*)(body["object_id"] | "");
+    String name     = (const char*)(body["name"]      | "");
+    String type     = (const char*)(body["type"]      | "dir");
+    if (uuid.length() == 0 || objectId.length() == 0) {
+        req->send(400, "application/json",
+                  "{\"error\":\"uuid and object_id required\"}");
+        return;
+    }
+    auto& inv = sixback::SpeakerInventory::instance();
+    String spIp;
+    bool ownedByUs = false;
+    String cloudUrl;
+    {
+        sixback::SpeakerInventory::LockGuard g(inv);
+        auto* sp = inv.findById(id);
+        if (!sp) { req->send(404, "application/json", "{\"error\":\"unknown deviceId\"}"); return; }
+        spIp = sp->ip;
+        ownedByUs = sp->ownedByUs;
+        cloudUrl = sp->cloudUrl;
+    }
+    // Peer-aware: a non-owner stick would record OPAQUE at the speaker, only
+    // for the owner's auto-mode tick to overwrite the slot from its store
+    // moments later (verified 2026-05-27 on C6 vs. S3 + Emma). Refuse with
+    // a hint so the user knows which stick to use or to migrate the speaker.
+    if (!ownedByUs) {
+        String e = "{\"error\":\"speaker not owned by this SixBack\",\"hint\":\"";
+        e += "Slot would be overwritten by the owning SixBack moments after recording. ";
+        e += "Migrate the speaker to this SixBack, or use the owner stick. ";
+        e += "Speaker currently polls: ";
+        e += cloudUrl.length() ? cloudUrl : String("(unknown)");
+        e += "\"}";
+        req->send(409, "application/json", e);
+        return;
+    }
+
+    auto* job = new RecordDlnaJob_{id, spIp, uuid, objectId, name, type, slot};
+    BaseType_t r = xTaskCreate(recordDlnaWorker_, "bg-dlna-rec", 4096, job,
+                                tskIDLE_PRIORITY + 1, nullptr);
+    if (r != pdPASS) {
+        delete job;
+        req->send(503, "application/json", "{\"error\":\"task spawn failed\"}");
+        return;
+    }
+    req->send(202, "application/json",
+              "{\"ok\":true,\"queued\":true,"
+              "\"message\":\"recording DLNA preset on speaker — refresh slot in ~14s\"}");
+}
+
+// -----------------------------------------------------------------------------
+// GET /api/speaker/{id}/dlna/servers
+//   Fresh-Pull /listMediaServers vom Speaker und gibt die discovered DLNA-
+//   Server als JSON zurueck. Die UI braucht hier mehr als die in
+//   SpeakerInventory gecachten UUIDs — sie braucht auch location (zur
+//   MediaServerDevDesc.xml) und friendly_name. Browse selbst macht dann
+//   der Pi5-Proxy unter sixback-dlna (Port 8790).
+// -----------------------------------------------------------------------------
+void handleDlnaServers(AsyncWebServerRequest* req) {
+    String id = req->pathArg(0);
+    auto& inv = sixback::SpeakerInventory::instance();
+    String spIp;
+    {
+        sixback::SpeakerInventory::LockGuard g(inv);
+        auto* sp = inv.findById(id);
+        if (!sp) { req->send(404, "application/json", "{\"error\":\"unknown deviceId\"}"); return; }
+        spIp = sp->ip;
+    }
+    HTTPClient http;
+    http.setReuse(false);
+    http.setConnectTimeout(1500);
+    http.setTimeout(3000);
+    String url = "http://" + spIp + ":" + String(BOSE_BMX_PORT) + "/listMediaServers";
+    if (!http.begin(url)) {
+        req->send(502, "application/json", "{\"error\":\"http begin failed\"}");
+        return;
+    }
+    int code = http.GET();
+    if (code != 200) {
+        http.end();
+        String e = "{\"error\":\"speaker HTTP\",\"code\":"; e += code; e += "}";
+        req->send(502, "application/json", e);
+        return;
+    }
+    String xml = http.getString();
+    http.end();
+
+    JsonDocument out;
+    out["ok"] = true;
+    JsonArray arr = out["servers"].to<JsonArray>();
+
+    auto getAttr = [](const String& chunk, const char* attr) -> String {
+        String needle = String(attr) + "=\"";
+        int s = chunk.indexOf(needle);
+        if (s < 0) return String();
+        s += needle.length();
+        int e = chunk.indexOf('"', s);
+        return e > s ? chunk.substring(s, e) : String();
+    };
+    int pos = 0;
+    while (true) {
+        int msStart = xml.indexOf("<media_server", pos);
+        if (msStart < 0) break;
+        int msEnd = xml.indexOf("/>", msStart);
+        if (msEnd < 0) msEnd = xml.indexOf(">", msStart);
+        if (msEnd < 0) break;
+        String chunk = xml.substring(msStart, msEnd);
+        String uuid = getAttr(chunk, "id");
+        String name = getAttr(chunk, "friendly_name");
+        String manu = getAttr(chunk, "manufacturer");
+        String model = getAttr(chunk, "model_name");
+        String location = getAttr(chunk, "location");
+        if (uuid.length() > 0 && location.length() > 0) {
+            JsonObject o = arr.add<JsonObject>();
+            o["uuid"] = uuid;
+            o["name"] = name;
+            o["manufacturer"] = manu;
+            o["model"] = model;
+            o["location"] = location;
+        }
+        pos = msEnd + 1;
+    }
+
+    String body; serializeJson(out, body);
+    req->send(200, "application/json", body);
+}
+
+// -----------------------------------------------------------------------------
 // Helper: Speaker-Side /presets-XML fetchen + grob parsen.
 // Returnt true wenn Fetch+Parse erfolgreich. Slot-Slots ohne preset bleiben
 // mit leerem source. Synchroner HTTP-Call (~100-300 ms) — akzeptabel weil
@@ -2763,6 +2995,10 @@ void registerApiEndpoints(AsyncWebServer& ui) {
     routeJsonBody(ui, "^/api/speaker/([^/]+)/play-source$", HTTP_POST, handlePlaySource);
     ui.on("^/api/speaker/([^/]+)/hardware-presets$", HTTP_GET, handleGetHardwarePresets);
     ui.on("^/api/speaker/([^/]+)/now-playing-live$", HTTP_GET, handleNowPlayingLive);
+
+    ui.on("^/api/speaker/([^/]+)/dlna/servers$", HTTP_GET, handleDlnaServers);
+    routeJsonBody(ui, "^/api/speaker/([^/]+)/dlna/preset/([1-6])$",
+                  HTTP_POST, handleDlnaRecordPreset);
 
     ui.on("^/api/speaker/([^/]+)/diagnostic-snapshot$",
           HTTP_GET, handleDiagnosticSnapshot);

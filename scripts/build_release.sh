@@ -53,8 +53,11 @@ fi
 #
 # Reihenfolge buildfs vor firmware bleibt aus historischen Gruenden:
 # (frueherer bug 2026-05-19, umgekehrt zeigte manifest.json +1 vs firmware.bin)
-"$HOME/.platformio/penv/bin/pio" run -e esp32 -e s3 -e c3 -e c6 -t buildfs
-"$HOME/.platformio/penv/bin/pio" run -e esp32 -e s3 -e c3 -e c6
+# v0.8.0: esp32-classic skipped — UI growth (DLNA tab + Spotify-Library + Migrate-UX)
+# pushed data/ past the 256 KB spiffs slot in partitions-4mb.csv. Followup:
+# either rebalance the 4-MB symmetric layout or strip data for esp32-classic.
+"$HOME/.platformio/penv/bin/pio" run -e s3 -e c3 -e c6 -t buildfs
+"$HOME/.platformio/penv/bin/pio" run -e s3 -e c3 -e c6
 
 # Resolve final version: tag if set, else read counter from version.h.
 if [ -n "$RELEASE_TAG_STRIPPED" ]; then
@@ -100,8 +103,9 @@ check_size() {
   fi
 }
 
-check_size "$PIO_BUILD/esp32/firmware.bin" $APP_4MB_SYM   "esp32 app"
-check_size "$PIO_BUILD/esp32/littlefs.bin" $FS_4MB_SYM    "esp32 fs"
+## esp32-classic skipped in v0.8.0 (data/ > 256 KB spiffs).
+# check_size "$PIO_BUILD/esp32/firmware.bin" $APP_4MB_SYM   "esp32 app"
+# check_size "$PIO_BUILD/esp32/littlefs.bin" $FS_4MB_SYM    "esp32 fs"
 check_size "$PIO_BUILD/c3/firmware.bin"    $APP_4MB_NOOTA "c3 app"
 check_size "$PIO_BUILD/c3/littlefs.bin"    $FS_4MB_NOOTA  "c3 fs"
 check_size "$PIO_BUILD/c6/firmware.bin"    $APP_4MB_NOOTA "c6 app"
@@ -149,7 +153,7 @@ merge_target() {
 #       Wer das mal wieder anpasst: hier mitziehen, sonst landet das
 #       LittleFS-Image im falschen Flash-Bereich und der Web-Flasher
 #       liefert kaputte Factory-Images aus.
-merge_target esp32 esp32   4MB  0x3B0000  0x1000
+# merge_target esp32 esp32   4MB  0x3B0000  0x1000   # v0.8.0: skipped, see top
 merge_target s3    esp32s3 16MB 0x610000  0x0
 merge_target c3    esp32c3 4MB  0x390000  0x0
 merge_target c6    esp32c6 4MB  0x390000  0x0
@@ -162,12 +166,6 @@ cat > "$OUT/manifest.json" <<EOF
   "funding_url": "https://polyformproject.org/licenses/noncommercial/1.0.0/",
   "new_install_prompt_erase": true,
   "builds": [
-    {
-      "chipFamily": "ESP32",
-      "parts": [
-        { "path": "sixback-esp32-factory.bin", "offset": 0 }
-      ]
-    },
     {
       "chipFamily": "ESP32-S3",
       "parts": [
@@ -207,13 +205,6 @@ cat > "$OUT/manifest-update.json" <<EOF
   "funding_url": "https://polyformproject.org/licenses/noncommercial/1.0.0/",
   "new_install_prompt_erase": false,
   "builds": [
-    {
-      "chipFamily": "ESP32",
-      "parts": [
-        { "path": "sixback-esp32-firmware.bin", "offset": 65536    },
-        { "path": "sixback-esp32-littlefs.bin", "offset": 3866624  }
-      ]
-    },
     {
       "chipFamily": "ESP32-S3",
       "parts": [

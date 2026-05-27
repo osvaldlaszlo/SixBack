@@ -425,15 +425,24 @@
       </div>
     </section>
 
-    <!-- DLNA tab — placeholder for Phase-4 UPnP browse (Pi5 proxy + ESP-side) -->
+    <!-- DLNA tab — UPnP browse via Pi5 proxy (sixback-dlna on :8790).
+         User picks a speaker (= LAN scope), then one of its visible
+         media servers, then drills containers and drags an item/folder
+         onto a preset slot. Backend records via /select+long-press. -->
     <section class="sb-panel" id="sb-panel-dlna">
-      <div class="sb-empty">
-        <p>💿 <b>DLNA browse</b> — coming next.</p>
-        <p style="text-align:left;font-style:normal;color:var(--ink);font-size:.85em;line-height:1.4">
-          Today the speaker still sees its DLNA media servers via
-          <code>/listMediaServers</code> and you can long-press a slot at the box
-          itself. The proper in-app browse (server list + UPnP-CDS folders +
-          drag-track) lands in the next iteration.</p>
+      <div class="sb-controls">
+        <select id="dlna-speaker" onchange="onDlnaSpeakerChange()" style="flex:1 1 8em"></select>
+        <select id="dlna-server"  onchange="onDlnaServerChange()"  style="flex:1 1 8em"></select>
+        <button onclick="loadDlnaServers()" title="Re-scan media servers">↻</button>
+      </div>
+      <div id="dlna-breadcrumb" style="font-size:.78em; color:var(--mute); padding:.2em 0;
+                                       overflow-x:auto; white-space:nowrap"></div>
+      <div class="sb-hint">
+        <span class="dnd-strong">↦ Drag a folder/track onto a preset slot</span> —
+        the speaker records the preset via long-press (≈12 s). Double-click a folder to enter.
+      </div>
+      <div class="sb-grid" id="dlna-grid">
+        <div class="sb-empty">Pick a speaker + DLNA server above.</div>
       </div>
     </section>
 
@@ -800,6 +809,16 @@ const STATIONS_API_BASES = [
   'http://10.10.11.113:8789/sixback/stations',
 ].filter(Boolean);
 let STATIONS_API_BASE = STATIONS_API_BASES[0];   // updated to whichever base actually works
+
+// DLNA-Browse-Proxy (UPnP-CDS SOAP -> JSON). No public reverse-proxy yet —
+// browser must reach the Pi5 directly. Same override path as STATIONS:
+//   localStorage.SIXBACK_DLNA_BASE = 'http://10.10.11.113:8790'
+const SIXBACK_DLNA_BASES = [
+  window.SIXBACK_DLNA_BASE,
+  localStorage.getItem('SIXBACK_DLNA_BASE'),
+  'http://10.10.11.113:8790',
+].filter(Boolean);
+let SIXBACK_DLNA_BASE = SIXBACK_DLNA_BASES[0];
 
 // ---- Toast ----
 // Dedup: identical msg+kind within DEDUP_MS is treated as the same event —
@@ -2041,6 +2060,13 @@ async function onPresetDrop(ev) {
     catch(_) { toast('Spotify drop payload malformed', 'error'); return; }
   }
 
+  // DLNA-pick drop: routes through the speaker's /select+long-press pipeline,
+  // not the regular PUT /preset/{N} path. OPAQUE STORED_MUSIC entries don't
+  // round-trip through PresetStore.set the same way TUNEIN/LIR do.
+  if (STATE.dragSource && STATE.dragSource.kind === 'dlna-pick') {
+    return applyDlnaDrop(STATE.dragSource, dst);
+  }
+
   // External payload route: cross-window drag (different tab/window of the
   // same or another SixBack), or .json file dropped from the desktop.
   // Use this whenever STATE.dragSource isn't a same-tab slot/library source.
@@ -2450,6 +2476,10 @@ function sidebarSelectTab(name) {
     loadSpotifyTriggers();
     loadSpotifyLibrary();
   }
+  if (name === 'dlna') {
+    refreshDlnaSpeakerPicker();
+    if (!STATE.dlnaServerControlUrl) loadDlnaServers();
+  }
 }
 
 // Stream tab: paste URL+Name, server-side validate, then user drags result tile.
@@ -2578,6 +2608,9 @@ function previewCapabilities() {
 }
 
 function refreshSidebarTargets() {
+  // Keep the DLNA speaker picker in sync with the inventory — same lifecycle
+  // hook as the preview-target dropdown so they update together.
+  refreshDlnaSpeakerPicker();
   const sel = document.getElementById('sb-target');
   if (!sel) return;
   // Preserve the CURRENT in-DOM value first; only fall back to localStorage
@@ -2840,6 +2873,282 @@ function onLibraryDragEnd(ev) {
     .forEach(e => e.classList.remove('drop-target','drop-blocked'));
 }
 
+// ============== DLNA tab — UPnP browse via Pi5 proxy ===========================
+// State for the DLNA tab. dlnaPath is the breadcrumb (root..current container).
+// dlnaServerControlUrl is the absolute UPnP CDS controlURL we POST SOAP to.
+STATE.dlnaSpeakerId       = null;
+STATE.dlnaServers         = [];
+STATE.dlnaServerControlUrl = null;
+STATE.dlnaPath            = [];
+STATE.dlnaItems           = { containers: [], items: [] };
+
+// Refresh the speaker picker when the speaker inventory changes. Called from
+// renderSpeakers + when the DLNA tab is first opened.
+function refreshDlnaSpeakerPicker() {
+  const sel = document.getElementById('dlna-speaker');
+  if (!sel) return;
+  const speakers = STATE.speakers || [];
+  if (speakers.length === 0) {
+    sel.innerHTML = '<option value="">No speakers known</option>';
+    return;
+  }
+  // Preserve current selection if still valid.
+  const prev = STATE.dlnaSpeakerId || sel.value;
+  // Mark non-owned speakers — DLNA-record refuses on those (peer-aware).
+  sel.innerHTML = speakers.map(s => {
+    const own = s.owned_by_us ? '' : ' (peer-owned)';
+    const lbl = (s.name || s.device_id) + own;
+    return `<option value="${esc(s.device_id)}"${s.owned_by_us ? '' : ' disabled'}>${esc(lbl)}</option>`;
+  }).join('');
+  // Prefer the previous pick if still owned, otherwise first owned speaker.
+  const owned = speakers.filter(s => s.owned_by_us);
+  const prevOk = prev && owned.find(s => s.device_id === prev);
+  if (prevOk) {
+    sel.value = prev;
+    STATE.dlnaSpeakerId = prev;
+  } else if (owned.length > 0) {
+    STATE.dlnaSpeakerId = owned[0].device_id;
+    sel.value = STATE.dlnaSpeakerId;
+  } else {
+    STATE.dlnaSpeakerId = null;
+    // All speakers are peer-owned — surface that clearly.
+    const grid = document.getElementById('dlna-grid');
+    if (grid) grid.innerHTML =
+      '<div class="sb-empty">No speakers owned by this SixBack. Migrate one first ' +
+      '(speaker card → ⤴ Migrate) to enable DLNA preset recording.</div>';
+  }
+}
+
+function onDlnaSpeakerChange() {
+  STATE.dlnaSpeakerId = document.getElementById('dlna-speaker').value || null;
+  STATE.dlnaServers = [];
+  STATE.dlnaServerControlUrl = null;
+  STATE.dlnaPath = [];
+  STATE.dlnaItems = { containers: [], items: [] };
+  loadDlnaServers();
+}
+
+async function loadDlnaServers() {
+  const dev = STATE.dlnaSpeakerId;
+  const sel = document.getElementById('dlna-server');
+  if (!sel) return;
+  if (!dev) {
+    sel.innerHTML = '<option value="">Pick a speaker first</option>';
+    document.getElementById('dlna-grid').innerHTML =
+      '<div class="sb-empty">Pick a speaker.</div>';
+    return;
+  }
+  sel.innerHTML = '<option>Scanning…</option>';
+  document.getElementById('dlna-grid').innerHTML =
+    '<div class="sb-empty">Asking speaker which DLNA servers it sees…</div>';
+  try {
+    const r = await api(`/api/speaker/${encodeURIComponent(dev)}/dlna/servers`);
+    STATE.dlnaServers = (r && r.servers) || [];
+    if (STATE.dlnaServers.length === 0) {
+      sel.innerHTML = '<option value="">No DLNA servers visible</option>';
+      document.getElementById('dlna-grid').innerHTML =
+        '<div class="sb-empty">Speaker sees no DLNA servers on its LAN.</div>';
+      return;
+    }
+    sel.innerHTML = STATE.dlnaServers.map(s =>
+      `<option value="${esc(s.uuid)}">${esc(s.name || s.model || s.uuid)}</option>`).join('');
+    onDlnaServerChange();
+  } catch (e) {
+    sel.innerHTML = '<option value="">Error</option>';
+    document.getElementById('dlna-grid').innerHTML =
+      `<div class="sb-empty">Server list failed: ${esc(e.message)}</div>`;
+  }
+}
+
+async function onDlnaServerChange() {
+  const sel = document.getElementById('dlna-server');
+  const uuid = sel ? sel.value : '';
+  const srv = STATE.dlnaServers.find(s => s.uuid === uuid);
+  if (!srv) return;
+  document.getElementById('dlna-grid').innerHTML =
+    '<div class="sb-empty">Fetching media-server descriptor…</div>';
+  try {
+    const url = SIXBACK_DLNA_BASE + '/dlna/describe?location=' +
+                encodeURIComponent(srv.location);
+    const resp = await fetch(url, {mode: 'cors'});
+    if (!resp.ok) throw new Error('HTTP '+resp.status);
+    const dj = await resp.json();
+    if (!dj.ok) throw new Error(dj.detail || 'describe failed');
+    STATE.dlnaServerControlUrl = dj.control_url;
+    STATE.dlnaPath = [];
+    await dlnaBrowse('0', dj.name || srv.name || 'Root', /*reset=*/true);
+  } catch (e) {
+    document.getElementById('dlna-grid').innerHTML =
+      `<div class="sb-empty">Describe failed: ${esc(e.message)}<br>
+       <small>${esc(SIXBACK_DLNA_BASE)} must be reachable from this browser.</small></div>`;
+  }
+}
+
+async function dlnaBrowse(objectId, title, reset) {
+  if (!STATE.dlnaServerControlUrl) return;
+  document.getElementById('dlna-grid').innerHTML =
+    '<div class="sb-empty">Loading…</div>';
+  try {
+    const url = SIXBACK_DLNA_BASE + '/dlna/browse?control_url=' +
+                encodeURIComponent(STATE.dlnaServerControlUrl) +
+                '&object_id=' + encodeURIComponent(objectId) + '&count=200';
+    const resp = await fetch(url, {mode: 'cors'});
+    if (!resp.ok) throw new Error('HTTP '+resp.status);
+    const j = await resp.json();
+    if (!j.ok) throw new Error(j.detail || 'browse failed');
+    STATE.dlnaItems = { containers: j.containers || [], items: j.items || [] };
+    if (reset) {
+      STATE.dlnaPath = [{id: objectId, title}];
+    } else {
+      const i = STATE.dlnaPath.findIndex(p => p.id === objectId);
+      if (i >= 0) STATE.dlnaPath = STATE.dlnaPath.slice(0, i + 1);
+      else STATE.dlnaPath.push({id: objectId, title});
+    }
+    renderDlnaBreadcrumb();
+    renderDlnaItems();
+  } catch (e) {
+    document.getElementById('dlna-grid').innerHTML =
+      `<div class="sb-empty">Browse failed: ${esc(e.message)}</div>`;
+  }
+}
+
+function renderDlnaBreadcrumb() {
+  const bc = document.getElementById('dlna-breadcrumb');
+  if (!bc) return;
+  if (!STATE.dlnaPath.length) { bc.innerHTML = ''; return; }
+  bc.innerHTML = STATE.dlnaPath.map((p, i) => {
+    if (i === STATE.dlnaPath.length - 1) {
+      return `<b>${esc(p.title)}</b>`;
+    }
+    const safeT = (p.title || '').replace(/'/g,'\\\'');
+    return `<a href="javascript:void(0)" onclick="dlnaBrowse('${esc(p.id)}','${esc(safeT)}',false)" style="color:var(--accent)">${esc(p.title)}</a>`;
+  }).join(' › ');
+}
+
+function renderDlnaItems() {
+  const grid = document.getElementById('dlna-grid');
+  if (!grid) return;
+  const { containers, items } = STATE.dlnaItems;
+  if (containers.length === 0 && items.length === 0) {
+    grid.innerHTML = '<div class="sb-empty">Empty folder.</div>';
+    return;
+  }
+  const uuid = document.getElementById('dlna-server')?.value || '';
+  const tile = (kind, id, title, meta, icon) => {
+    const payload = JSON.stringify({
+      kind, id, title, uuid,
+      itemType: kind === 'container' ? 'dir' : 'track',
+    }).replace(/"/g,'&quot;');
+    const safeT = (title || '').replace(/'/g,'\\\'');
+    const onDbl = (kind === 'container')
+      ? `ondblclick="dlnaBrowse('${esc(id)}','${esc(safeT)}',false)"` : '';
+    return `
+      <div class="lib-tile" draggable="true" data-payload="${payload}"
+           ondragstart="onDlnaDragStart(event)" ondragend="onDlnaDragEnd(event)"
+           ${onDbl} title="${esc(title)}${meta?' — '+esc(meta):''}">
+        <div class="tile-logo-ph">${icon}</div>
+        <div class="tile-name">${esc(title || '(untitled)')}</div>
+        ${meta ? `<div class="tile-meta">${esc(meta)}</div>` : ''}
+      </div>`;
+  };
+  let html = '';
+  for (const c of containers) {
+    const meta = c.child_count != null ? `${c.child_count} item${c.child_count === 1 ? '' : 's'}` : '';
+    html += tile('container', c.id, c.title, meta, '📁');
+  }
+  for (const it of items) {
+    const meta = [it.artist, it.album].filter(Boolean).join(' · ');
+    html += tile('item', it.id, it.title, meta, '🎵');
+  }
+  grid.innerHTML = html;
+}
+
+function onDlnaDragStart(ev) {
+  const el = ev.currentTarget;
+  let p;
+  try { p = JSON.parse(el.dataset.payload); } catch(e) { ev.preventDefault(); return; }
+  STATE.dragSource = {
+    kind: 'dlna-pick',
+    uuid: p.uuid,
+    objectId: p.id,
+    name: p.title,
+    type: p.itemType,
+  };
+  el.classList.add('dragging');
+  ev.dataTransfer.effectAllowed = 'copy';
+  try { ev.dataTransfer.setData('text/plain', `dlna:${p.id}`); } catch(e){}
+}
+
+function onDlnaDragEnd(ev) {
+  ev.currentTarget.classList.remove('dragging');
+  STATE.dragSource = null;
+  STATE._lastDragEndedAt = Date.now();
+  document.querySelectorAll('.preset.drop-target, .preset.drop-blocked')
+    .forEach(e => e.classList.remove('drop-target','drop-blocked'));
+}
+
+async function applyDlnaDrop(payload, dst) {
+  // payload = {uuid, objectId, name, type}
+  const spkName = (STATE.speakers.find(s => s.device_id === dst.dev)?.name) || dst.dev;
+  if (!confirm(
+    `Record DLNA preset on ${spkName} slot ${dst.slot}?\n\n` +
+    `"${payload.name}"\n\n` +
+    `The speaker will switch source and stream the ${payload.type === 'dir' ? 'folder' : 'track'} ` +
+    `for about 12 seconds while we record the long-press.`
+  )) return;
+  progressShow(`Recording DLNA preset on ${spkName}`, [
+    {id:'queue',   label:'Enqueue on speaker'},
+    {id:'select',  label:'/select STORED_MUSIC ContentItem + stream stabilise (≈8 s)'},
+    {id:'press',   label:'Long-press PRESET_'+dst.slot+' (≈2.5 s)'},
+    {id:'import',  label:'Re-import /presets into store'},
+  ]);
+  progressStep('queue','running'); progressBar(5);
+  try {
+    const r = await api(`/api/speaker/${encodeURIComponent(dst.dev)}/dlna/preset/${dst.slot}`, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({
+        uuid:      payload.uuid,
+        object_id: payload.objectId,
+        name:      payload.name,
+        type:      payload.type,
+      }),
+    });
+    if (!(r && r.ok)) {
+      const msg = r?.hint ? `${r.error} — ${r.hint}` : (r?.error || 'queue failed');
+      progressStep('queue','error', msg);
+      progressDone();
+      toast(msg, 'error');
+      return;
+    }
+    progressStep('queue','done');
+    progressStep('select','running');
+    // Worker takes ~12s total — bar goes 5..90 over that period.
+    for (let s = 1; s <= 10; s++) {
+      await new Promise(r => setTimeout(r, 1000));
+      progressBar(5 + (s / 10) * 60);
+    }
+    progressStep('select','done');
+    progressStep('press','running');
+    for (let s = 1; s <= 3; s++) {
+      await new Promise(r => setTimeout(r, 1000));
+      progressBar(65 + (s / 3) * 20);
+    }
+    progressStep('press','done');
+    progressStep('import','running'); progressBar(90);
+    await new Promise(r => setTimeout(r, 1500));
+    await loadPresetsFor(dst.dev);
+    kickPoll(dst.dev);
+    progressStep('import','done'); progressBar(100);
+    progressDone(1500);
+    markDirty(dst.dev);
+    toast(`DLNA preset "${payload.name}" recorded to slot ${dst.slot} of ${spkName}.`);
+  } catch (e) {
+    progressStep('select','error', e.message);
+    progressDone();
+  }
+}
+
 // ---- Speaker actions ----
 async function actSpeaker(devId, action) {
   const verb = ({migrate:'Migrate',reboot:'Reboot',refresh:'Status check'})[action];
@@ -2921,12 +3230,166 @@ async function actSpeaker(devId, action) {
       }
       progressDone(800);
       return;
+    } else if (action === 'migrate') {
+      return await actMigrateWithProgress(devId);
+    } else if (action === 'reboot') {
+      return await actRebootWithProgress(devId);
     } else {
       r = await api('/api/speaker/'+encodeURIComponent(devId)+'/'+action, {method:'POST'});
       toast(r.message || (verb+' done'), r.ok!==false ? 'success':'error');
       await loadSpeakers();
     }
   } catch (e) { toast(verb+': '+e.message, 'error'); }
+}
+
+// Migrate runs in a 90-120 s background job on the ESP. We poll
+// /api/speakers every 5 s and watch the target speaker's status
+// transition through {settling|offline} → migrated, mapping each
+// transition onto modal steps. Worker phases: prep (sync, in handler) →
+// telnet writes margeServerUrl → Bose reboot → post-boot verify.
+async function actMigrateWithProgress(devId) {
+  const sp = STATE.speakers.find(s => s.device_id === devId);
+  const spName = (sp && sp.name) || devId;
+  progressShow(`Migrating ${spName}`, [
+    {id:'prep',   label:'Pre-migrate snapshot + media-servers + spotify-accounts'},
+    {id:'cmd',    label:'Telnet writes: margeServerUrl + sys reboot'},
+    {id:'wait',   label:'Wait for Bose to reboot and rejoin WLAN (~60 s)'},
+    {id:'verify', label:'Verify cloud URL persisted (post-boot getpdo)'},
+  ]);
+  progressStep('prep','running'); progressBar(5);
+  let r;
+  try {
+    r = await api(`/api/speaker/${encodeURIComponent(devId)}/migrate`, {method:'POST'});
+  } catch (e) {
+    progressStep('prep','error', e.message); progressDone();
+    toast('Migrate: '+e.message, 'error');
+    return;
+  }
+  if (!r || !r.ok) {
+    progressStep('prep','error', r?.error || 'queue failed');
+    progressDone();
+    toast('Migrate failed: '+(r?.error || 'unknown'), 'error');
+    return;
+  }
+  progressStep('prep','done');
+  progressStep('cmd','running'); progressBar(15);
+
+  const startedAt = Date.now();
+  const TIMEOUT_MS = 150_000;
+  let phase = 'cmd';
+  let lastStatus = sp ? sp.status : '';
+  while (Date.now() - startedAt < TIMEOUT_MS) {
+    await new Promise(r => setTimeout(r, 5000));
+    const elapsedS = (Date.now() - startedAt) / 1000;
+    progressBar(15 + Math.min(elapsedS / 90, 1) * 75);
+    try {
+      const sl = await api('/api/speakers');
+      STATE.speakers = sl.speakers || STATE.speakers;
+      renderSpeakers();
+      const cur = STATE.speakers.find(s => s.device_id === devId);
+      if (!cur) continue;
+      lastStatus = cur.status;
+
+      // Phase: cmd → wait when speaker drops offline / starts settling
+      if (phase === 'cmd' && (cur.status === 'offline' || cur.status === 'settling')) {
+        progressStep('cmd','done', 'speaker rebooting');
+        progressStep('wait','running');
+        phase = 'wait';
+      }
+      // Done: status=migrated + cloudUrl points at us
+      if (cur.status === 'migrated' && cur.cloud_url) {
+        if (phase !== 'verify') {
+          if (phase === 'cmd') progressStep('cmd','done');
+          progressStep('wait','done');
+          progressStep('verify','running'); progressBar(95);
+        }
+        progressStep('verify','done', cur.cloud_url);
+        progressBar(100);
+        progressDone(2000);
+        toast(`${spName} migrated → ${cur.cloud_url}`, 'success');
+        return;
+      }
+      if (cur.status === 'MIGRATE_FAILED') {
+        progressStep(phase,'error', 'speaker reported MIGRATE_FAILED');
+        progressDone();
+        toast(`${spName} migration failed`, 'error');
+        return;
+      }
+    } catch (_) { /* keep polling */ }
+  }
+  progressStep(phase,'error', `timeout after ${(TIMEOUT_MS/1000)|0}s, last status: ${lastStatus}`);
+  progressDone();
+  toast(`${spName} migration timed out — check speaker card manually`, 'error');
+}
+
+// Reboot is a Telnet sys-reboot, ~30–60 s downtime. Same polling pattern
+// as migrate: watch status flip offline/settling → back to its prior
+// value (typically migrated for owned speakers).
+async function actRebootWithProgress(devId) {
+  const sp = STATE.speakers.find(s => s.device_id === devId);
+  if (!sp) return;
+  const spName = sp.name || devId;
+  const priorStatus = sp.status;
+  progressShow(`Rebooting ${spName}`, [
+    {id:'cmd',  label:'Telnet sys reboot'},
+    {id:'down', label:'Speaker going offline'},
+    {id:'up',   label:'Wait for speaker to rejoin (~60 s)'},
+  ]);
+  progressStep('cmd','running'); progressBar(5);
+  let r;
+  try {
+    r = await api(`/api/speaker/${encodeURIComponent(devId)}/reboot`, {method:'POST'});
+  } catch (e) {
+    progressStep('cmd','error', e.message); progressDone();
+    toast('Reboot: '+e.message, 'error');
+    return;
+  }
+  if (!r || r.ok === false) {
+    progressStep('cmd','error', r?.error || 'failed');
+    progressDone();
+    toast('Reboot failed: '+(r?.error || 'unknown'), 'error');
+    return;
+  }
+  progressStep('cmd','done');
+  progressStep('down','running'); progressBar(20);
+
+  const startedAt = Date.now();
+  const TIMEOUT_MS = 120_000;
+  let sawDown = false;
+  while (Date.now() - startedAt < TIMEOUT_MS) {
+    await new Promise(r => setTimeout(r, 4000));
+    const elapsedS = (Date.now() - startedAt) / 1000;
+    progressBar(20 + Math.min(elapsedS / 60, 1) * 75);
+    try {
+      const sl = await api('/api/speakers');
+      STATE.speakers = sl.speakers || STATE.speakers;
+      renderSpeakers();
+      const cur = STATE.speakers.find(s => s.device_id === devId);
+      if (!cur) continue;
+      if (!sawDown && (cur.status === 'offline' || cur.status === 'settling')) {
+        sawDown = true;
+        progressStep('down','done', cur.status);
+        progressStep('up','running');
+      }
+      // Back-up detection: status returns to a non-offline state. Prefer
+      // the prior status; accept "migrated" or "not_migrated" as good.
+      if (sawDown && cur.status !== 'offline' && cur.status !== 'settling') {
+        progressStep('up','done', cur.status);
+        progressBar(100);
+        progressDone(1500);
+        toast(`${spName} back online (${cur.status})`, 'success');
+        await loadSpeakers();
+        return;
+      }
+    } catch (_) { /* keep polling */ }
+  }
+  if (!sawDown) {
+    progressStep('down','error', 'never saw offline — telnet reboot may have been rejected');
+  } else {
+    progressStep('up','error', `timeout — last status check did not show speaker back`);
+  }
+  progressDone();
+  toast(`${spName} reboot probe timed out`, 'error');
 }
 
 async function removeSpeaker(devId) {

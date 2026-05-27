@@ -1,16 +1,9 @@
 {
   "name": "SixBack (update)",
-  "version": "0.7.924",
+  "version": "0.8.0",
   "funding_url": "https://polyformproject.org/licenses/noncommercial/1.0.0/",
   "new_install_prompt_erase": false,
   "builds": [
-    {
-      "chipFamily": "ESP32",
-      "parts": [
-        { "path": "sixback-esp32-firmware.bin", "offset": 65536    },
-        { "path": "sixback-esp32-littlefs.bin", "offset": 3866624  }
-      ]
-    },
     {
       "chipFamily": "ESP32-S3",
       "parts": [
