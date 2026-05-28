@@ -1,6 +1,6 @@
 {
   "name": "SixBack (update)",
-  "version": "0.8.1",
+  "version": "0.8.2",
   "funding_url": "https://polyformproject.org/licenses/noncommercial/1.0.0/",
   "new_install_prompt_erase": false,
   "builds": [

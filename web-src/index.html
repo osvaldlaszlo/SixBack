@@ -66,6 +66,26 @@
   .pill.stale          { background: #f9e8b6; color: #7a5400; }
   .pill.settling       { background: #f9e8b6; color: #7a5400; font-style: italic; }
 
+  /* Issue #7: collapsible speaker cards + at-a-glance status header */
+  .speaker-head-main { flex: 1 1 auto; min-width: 0; }
+  .speaker-head-row { display: flex; align-items: center; gap: .5em; cursor: pointer; }
+  .sp-toggle { color: var(--mute); font-size: .8em; width: 1em; flex: none;
+               user-select: none; text-align: center; }
+  .sp-dot { width: .72em; height: .72em; border-radius: 50%; flex: none;
+            box-sizing: border-box; border: 2px solid var(--mute); background: transparent; }
+  .sp-dot.on       { background: #2ecc71; border-color: #27a05a; }
+  .sp-dot.off      { background: transparent; border-color: var(--mute); }
+  .sp-dot.offline  { background: #e74c3c; border-color: #c0392b; }
+  .sp-dot.settling { background: #f6c945; border-color: #caa023; }
+  .speaker.collapsed .speaker-info,
+  .speaker.collapsed .speaker-cloud,
+  .speaker.collapsed .actions,
+  .speaker.collapsed .presets,
+  .speaker.collapsed .preset-actions { display: none !important; }
+  .syshead { cursor: pointer; font-weight: 600; font-size: 1.15em; margin: 1.4em 0 .4em;
+             display: flex; align-items: center; gap: .5em; user-select: none; }
+  #sys-collapsible.collapsed { display: none; }
+
   .actions { display: flex; gap: .35em; flex-wrap: wrap; margin-top: .5em; }
   /* Preset layout matches the speaker keypad: 2 rows × 3 columns (1-2-3 / 4-5-6) */
   .presets { margin-top: .9em; display: grid;
@@ -559,11 +579,16 @@
   <button onclick="refreshStatuses()" title="Re-probe all speakers (status + /presets) AND discard any unsaved store-side changes by reverting to what the speaker actually has">🔄 Refresh status</button>
   <button onclick="openAddModal()">+ Add speaker manually</button>
   <button onclick="openGroupSyncModal()">⇄ Sync presets to group</button>
+  <button onclick="setAllSpeakersOpen(false)" title="Collapse every speaker card to just its status header">⊟ Collapse all</button>
+  <button onclick="setAllSpeakersOpen(true)" title="Expand every speaker card">⊞ Expand all</button>
   <button class="danger" onclick="rebootEsp()">⟲ Reboot ESP</button>
   <button class="danger" onclick="factoryResetWifi()">⚠ WiFi factory reset</button>
 </div>
 
 <div id="speakers-host"></div>
+
+<div class="syshead" onclick="toggleSysSection()"><span class="sp-toggle" id="sys-chevron">▸</span> ⚙ SYSTEM</div>
+<div id="sys-collapsible" class="collapsed">
 
 <div class="fwcard">
   <h2>⬆ Firmware update (OTA over WiFi)</h2>
@@ -629,6 +654,8 @@
     <pre id="raw-status">…</pre>
   </details>
 </div>
+
+</div><!-- /#sys-collapsible -->
 
 <div class="automode-bar" id="diagshare-bar" style="margin-top:1em">
   <span class="label">Share diagnostic snapshots:</span>
@@ -1315,6 +1342,83 @@ function pillForStatus(s, myBase) {
   return `<span class="pill ${cls}">${label}</span>`;
 }
 
+// ---- Issue #7: collapsible speaker cards + at-a-glance status dots --------
+function speakerOpenMap_() {
+  try { return JSON.parse(localStorage.SIXBACK_SPK_OPEN || '{}'); } catch(e) { return {}; }
+}
+function isSpeakerOpen_(devId) {
+  const m = speakerOpenMap_();
+  if (devId in m) return !!m[devId];           // explicit user choice wins
+  // No stored preference: a lone speaker opens by default (nothing to scroll
+  // past); with several, default collapsed for a clean at-a-glance overview.
+  return STATE.speakers.length <= 1;
+}
+function setSpeakerOpen_(devId, open) {
+  const m = speakerOpenMap_();
+  m[devId] = !!open;
+  try { localStorage.SIXBACK_SPK_OPEN = JSON.stringify(m); } catch(e) {}
+}
+function updateChevron_(card, open) {
+  const ch = card.querySelector('.sp-toggle');
+  if (ch) ch.textContent = open ? '▾' : '▸';
+}
+function toggleSpeaker(ev, devId) {
+  if (ev && ev.stopPropagation) ev.stopPropagation();
+  const card = document.getElementById('sp-' + devId);
+  if (!card) return;
+  const nowCollapsed = card.classList.toggle('collapsed');
+  setSpeakerOpen_(devId, !nowCollapsed);
+  updateChevron_(card, !nowCollapsed);
+}
+function setAllSpeakersOpen(open) {
+  const m = speakerOpenMap_();
+  for (const s of STATE.speakers) m[s.device_id] = !!open;
+  try { localStorage.SIXBACK_SPK_OPEN = JSON.stringify(m); } catch(e) {}
+  for (const s of STATE.speakers) {
+    const card = document.getElementById('sp-' + s.device_id);
+    if (!card) continue;
+    card.classList.toggle('collapsed', !open);
+    updateChevron_(card, open);
+  }
+}
+// Header status dot: offline / settling (from speaker status) take precedence;
+// otherwise on/off from now-playing (same isOn logic that colors the Power button).
+function updateSpeakerDot_(devId) {
+  const dot = document.getElementById('dot-' + devId);
+  if (!dot) return;
+  const s = STATE.speakers.find(x => x.device_id === devId);
+  let cls, label;
+  if (!s || s.status === 'offline') { cls = 'offline'; label = 'offline'; }
+  else if (s.status === 'settling') { cls = 'settling'; label = 'settling…'; }
+  else {
+    const np = STATE.nowPlaying[devId] || {};
+    const ps = (np.play_state || '').toUpperCase();
+    const src = (np.source || '').toUpperCase();
+    const isOn = src && src !== 'STANDBY' && src !== 'INVALID_SOURCE' && ps !== 'STOP_STATE';
+    cls = isOn ? 'on' : 'off';
+    label = isOn ? 'playing' : 'standby';
+  }
+  dot.className = 'sp-dot ' + cls;
+  dot.title = label;
+}
+function toggleSysSection() {
+  const w = document.getElementById('sys-collapsible');
+  if (!w) return;
+  const collapsed = w.classList.toggle('collapsed');
+  try { localStorage.SIXBACK_SYS_OPEN = collapsed ? '0' : '1'; } catch(e) {}
+  const ch = document.getElementById('sys-chevron');
+  if (ch) ch.textContent = collapsed ? '▸' : '▾';
+}
+function restoreSysSection_() {
+  const w = document.getElementById('sys-collapsible');
+  if (!w) return;
+  let open = false;
+  try { open = localStorage.SIXBACK_SYS_OPEN === '1'; } catch(e) {}
+  w.classList.toggle('collapsed', !open);
+  const ch = document.getElementById('sys-chevron');
+  if (ch) ch.textContent = open ? '▾' : '▸';
+}
+
 // Diff-basiertes Render: bestehende Cards in-place updaten statt den
 // kompletten Host-innerHTML zu nuken. Wichtig waehrend pollUntilScanDone(),
 // damit nicht jeder 3-s-Tick die Presets neu laedt + Cards flackern.
@@ -1365,6 +1469,9 @@ function renderSpeakers() {
   for (const [id, el] of existing) {
     if (!wanted.has(id)) el.remove();
   }
+
+  // Issue #7: refresh the header status dots after add/update/reorder.
+  for (const s of STATE.speakers) updateSpeakerDot_(s.device_id);
 }
 
 // In-place Update der mutablen Card-Bestandteile (Status-Pill, Info-Zeile,
@@ -1410,6 +1517,8 @@ function updateSpeakerCard(card, s, myBase) {
 
   const actions = card.querySelector('.actions');
   if (actions) actions.innerHTML = actionButtonsHtml(s);
+
+  updateSpeakerDot_(s.device_id);
 }
 
 function actionButtonsHtml(s) {
@@ -1437,11 +1546,16 @@ function speakerCard(s, myBase) {
         s.spotify_accounts.map(a => `<code>${esc(a.display_name || a.source_account)}</code>`).join(', ')
       }</div>`
     : '';
+  const open = isSpeakerOpen_(s.device_id);
   return `
-    <div class="speaker" id="sp-${s.device_id}" data-device-id="${esc(s.device_id)}">
+    <div class="speaker${open ? '' : ' collapsed'}" id="sp-${s.device_id}" data-device-id="${esc(s.device_id)}">
       <div class="speaker-head">
-        <div>
-          <div class="speaker-title">${esc(s.name || s.device_id)}  ${pillForStatus(s, myBase)}</div>
+        <div class="speaker-head-main">
+          <div class="speaker-head-row" onclick="toggleSpeaker(event,'${s.device_id}')" title="Click to expand / collapse">
+            <span class="sp-toggle" id="chev-${s.device_id}">${open ? '▾' : '▸'}</span>
+            <span class="sp-dot off" id="dot-${s.device_id}" title="status"></span>
+            <div class="speaker-title">${esc(s.name || s.device_id)}  ${pillForStatus(s, myBase)}</div>
+          </div>
           <div class="speaker-info">${esc(s.model)} · ${esc(s.ip)} · ${esc(s.device_id)} · FW ${esc((s.firmware||'').substring(0,15))}${s.group_id ? ' · group: '+esc(s.group_id) : ''}</div>
           ${cloudLine}
           ${spotifyLine}
@@ -2281,6 +2395,7 @@ async function pollNowPlaying(devId) {
     }
     STATE.nowPlaying[devId] = np;
     applyPlayingHighlight(devId);
+    updateSpeakerDot_(devId);
     // Update power button visual when playing
     const btn = document.getElementById('pwr-'+devId);
     if (btn) {
@@ -4173,6 +4288,8 @@ try {
     document.getElementById('sb-handle-text').textContent = '';
   }
 } catch(e){}
+// Issue #7: restore the collapsible SYSTEM section's open/closed state.
+try { restoreSysSection_(); } catch(e){}
 // ---- Spotify ----------------------------------------------------------
 // Slot-Map cache: { "DEVICEID_N": "spotify:uri" }; used by presetCard() to
 // stamp a Spotify badge onto Slot N of that speaker.

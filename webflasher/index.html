@@ -189,9 +189,21 @@ slots, push to the speaker.</p>
       const rec  = b.chipFamily === 'ESP32-S3'
         ? ' <span style="color:var(--ok);font-weight:600">★ recommended</span>'
         : '';
+      // Derive the per-target file base from the factory path
+      // ("sixback-s3-factory.bin" -> "sixback-s3") and link all three
+      // artefacts directly: factory (full USB flash) plus firmware.bin +
+      // littlefs.bin for the in-device "Manual upload" (keeps settings, no USB).
+      const base = (part.path || '').replace(/-factory\.bin$/, '');
+      const dl = base
+        ? `<div class="meta" style="display:flex;gap:.7em;flex-wrap:wrap;margin-top:.35em">
+             <a href="${base}-factory.bin" download>factory.bin</a>
+             <a href="${base}-firmware.bin" download>firmware.bin</a>
+             <a href="${base}-littlefs.bin" download>littlefs.bin</a>
+           </div>`
+        : `<div class="meta">${part.path || ''}</div>`;
       return `<div class="target">
                 <div class="name">${b.chipFamily}${rec}</div>
-                <div class="meta">${part.path || ''}</div>
+                ${dl}
               </div>`;
     }).join('');
   }).catch(() => {

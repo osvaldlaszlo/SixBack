@@ -22,6 +22,7 @@ This script touches only the project tree. No global git config is modified.
 import datetime
 import os
 import subprocess
+import time
 
 Import("env")  # noqa: F821 — injected by PlatformIO
 
@@ -64,6 +65,24 @@ def _atomic_write(path, content):
         pass
 
 
+def _atomic_write_bytes(path, data):
+    """Binary atomic write + fsync (file + dir). Ohne fsync schreibt NFS Bloecke
+    verzoegert zurueck -> mklittlefs liest ein halb-gefuelltes File (NUL-Praefix)
+    und packt eine kaputte index.html.gz ins LittleFS-Image."""
+    tmp = path + ".tmp"
+    with open(tmp, "wb") as f:
+        f.write(data)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+    try:
+        dfd = os.open(os.path.dirname(path) or ".", os.O_RDONLY)
+        try: os.fsync(dfd)
+        finally: os.close(dfd)
+    except OSError:
+        pass
+
+
 def _write_build(n):
     _atomic_write(BUILD_FILE, f"{n}\n")
 
@@ -95,11 +114,26 @@ def _git_autocommit(prev_version_str):
         print(f"[version_bump] git add failed (rc={add.returncode}); skip commit")
         return False
     msg = f"build snapshot v{prev_version_str}"
-    cm = _git_run(["commit", "-m", msg], capture=True)
-    if cm.returncode != 0:
-        print(f"[version_bump] git commit skipped: {cm.stdout.strip() or cm.stderr.strip()}")
-        return False
-    return True
+    # NFS-Flaky-Workaround: a commit-msg hook makes git re-read
+    # .git/COMMIT_EDITMSG from the NFS-backed repo after the hook returns.
+    # The NFS client intermittently serves a stale/NUL-padded read, so git
+    # aborts with "a NUL byte in commit log message not allowed" /
+    # "failed to write commit object" — even though the message is always
+    # clean ASCII and no commit object is written (so a retry can't dupe).
+    # Empirically transient (~1-in-3), so retry a few times. We do NOT pass
+    # --no-verify: the hook must keep running; the snapshot just needs to land.
+    last = ""
+    for attempt in range(8):
+        cm = _git_run(["commit", "-m", msg], capture=True)
+        if cm.returncode == 0:
+            return True
+        last = ((cm.stderr or "") + (cm.stdout or "")).strip()
+        transient = "NUL byte" in last or "failed to write commit object" in last
+        if not transient:
+            break  # real failure (e.g. hook rejection) — don't retry
+        time.sleep(0.25 * (attempt + 1))
+    print(f"[version_bump] git commit skipped: {last}")
+    return False
 
 
 def main():
@@ -177,10 +211,31 @@ def main():
             os.path.getmtime(gz_html) < src_mtime):
             with open(src_html, "rb") as fi:
                 raw = fi.read()
-            with _gzip.open(gz_html, "wb", compresslevel=9) as fo:
-                fo.write(raw)
-            print(f"[gzip-ui] {len(raw)} -> {os.path.getsize(gz_html)} bytes "
-                  f"({100*os.path.getsize(gz_html)/max(1,len(raw)):.1f}%)")
+            # NFS-safe: build the gzip fully in memory, write atomically with
+            # fsync, then read back + validate. A plain _gzip.open() write to the
+            # NFS-backed data/ dir got flushed lazily, so mklittlefs occasionally
+            # packed a NUL-prefixed (corrupt) index.html.gz into the LittleFS
+            # image and the device served an undecodable page. Fail loud (after
+            # retries) rather than ship a broken UI.
+            gz_bytes = _gzip.compress(raw, compresslevel=9)
+            for attempt in range(3):
+                _atomic_write_bytes(gz_html, gz_bytes)
+                try:
+                    with open(gz_html, "rb") as fc:
+                        check = fc.read()
+                    if check[:2] != b"\x1f\x8b" or _gzip.decompress(check) != raw:
+                        raise ValueError("gz read-back mismatch (NFS write-back?)")
+                    break
+                except Exception as e:
+                    print(f"[gzip-ui] post-write validation failed "
+                          f"(attempt {attempt+1}/3): {e}")
+                    time.sleep(0.3)
+            else:
+                raise RuntimeError(
+                    f"[gzip-ui] {gz_html} stayed corrupt after 3 atomic writes — "
+                    f"aborting build to avoid flashing a broken UI.")
+            print(f"[gzip-ui] {len(raw)} -> {len(gz_bytes)} bytes "
+                  f"({100*len(gz_bytes)/max(1,len(raw)):.1f}%)")
 
 
 main()
