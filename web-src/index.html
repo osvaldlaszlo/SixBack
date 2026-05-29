@@ -1270,8 +1270,16 @@ async function onlineInstall(force) {
     const url = '/api/update/install' + (force ? '?force=1' : '');
     const r = await fetch(url, { method: 'POST', cache: 'no-store' });
     const d = await r.json();
-    if (!r.ok) { toast('Install failed: ' + (d.error || 'HTTP '+r.status), 'error'); return; }
-    renderOnline(d);
+    // Panel IMMER an den echten Backend-State angleichen — auch im Fehlerfall.
+    // Sonst bliebe ein veralteter "update available"-Text neben dem Fehler-Toast
+    // stehen (genau der irrefuehrende Zustand aus Issue #6).
+    if (d && d.state) renderOnline(d);
+    if (!r.ok) {
+      // 'already up-to-date' ist kein Fehler -> gruener Toast; Rest rot.
+      const kind = (d && d.state === 'idle') ? 'success' : 'error';
+      toast((d && d.error) ? d.error : 'Install failed: HTTP ' + r.status, kind);
+      return;
+    }
   } catch (e) {
     toast('Install request failed: ' + e.message, 'error');
   }

@@ -2342,19 +2342,36 @@ void handleOtaUpdateInstall(AsyncWebServerRequest* req) {
     bool force = req->hasParam("force") && req->getParam("force")->value() == "1";
     bool ok = force ? sixback::ota::installOnlineForceAsync()
                     : sixback::ota::installOnlineAsync();
-    if (!ok) {
-        auto st = sixback::ota::getStatus();
-        if (!force && st.state != sixback::ota::State::AVAILABLE) {
-            req->send(409, "application/json",
-                      String("{\"error\":\"no update available — run /api/update/check first (use ?force=1 to re-install)\",\"state\":\"")
-                       + otaStateName_(st.state) + "\"}");
-            return;
-        }
-        req->send(500, "application/json",
-                  "{\"error\":\"failed to spawn install task\"}");
-        return;
+    if (ok) { writeOtaStatus_(req); return; }
+
+    // Nicht gestartet. installOnlineAsync() hat ggf. frisch nach-gecheckt, also
+    // spiegelt der State den echten Grund — praezise, handlungsleitende Meldung
+    // statt pauschalem "no update available" (UX-Bug #6). current/latest mit-
+    // liefern, damit das UI-Panel sich am echten Stand ausrichten kann.
+    auto st = sixback::ota::getStatus();
+    using S = sixback::ota::State;
+    JsonDocument doc;
+    int httpCode;
+    if (st.state == S::INSTALLING) {
+        httpCode = 409;
+        doc["error"] = "an update is already installing";
+    } else if (st.state == S::ERROR_) {
+        httpCode = 503;  // transient: Manifest/Netz/TLS — "nochmal versuchen", NICHT "kein Update"
+        doc["error"] = "update server unreachable — check Wi-Fi and try again";
+        if (st.error.length()) doc["detail"] = st.error;
+    } else if (st.state == S::IDLE) {
+        httpCode = 409;  // wirklich aktuell
+        doc["error"] = String("already up-to-date (") + st.latest +
+                       ") — use Force re-install to flash this version anyway";
+    } else {
+        httpCode = 500;
+        doc["error"] = "failed to start update";
     }
-    writeOtaStatus_(req);
+    doc["state"]   = otaStateName_(st.state);
+    doc["current"] = st.current;
+    doc["latest"]  = st.latest;
+    String body; serializeJson(doc, body);
+    req->send(httpCode, "application/json", body);
 }
 
 void handleOtaUpdateStatus(AsyncWebServerRequest* req) {

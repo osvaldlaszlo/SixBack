@@ -391,8 +391,27 @@ bool spawnInstallTask_() {
 } // anon
 
 bool installOnlineAsync() {
+    // Laeuft schon ein Pull? Nicht erneut checken (TLS waehrend Flash = Heap-
+    // Druck) und nicht doppelt spawnen.
+    if (g_status.state == State::INSTALLING) {
+        Serial.println("[ota-pull] installAsync rejected: already installing");
+        return false;
+    }
+    // Selbst-validierend: liegt kein frisches AVAILABLE-Verdikt vor, JETZT
+    // synchron nach-checken. Sonst blockt ein veralteter / abgelaufener / auf
+    // ERROR gefallener vorheriger Check (oder gar keiner) einen legitimen
+    // Install — der Install-Klick IST die Update-Absicht des Users, er soll
+    // nicht erst manuell "Check" druecken muessen. (UX-Bug #6: das Gate meldete
+    // faelschlich "no update available", obwohl ein Update vorlag — der Check-
+    // State war zwischen Check und Install stale/ERROR geworden, u.a. weil ein
+    // transienter TLS-Fehler unter Heap-Druck checkOnline() auf ERROR wirft.)
     if (g_status.state != State::AVAILABLE) {
-        Serial.printf("[ota-pull] installAsync rejected: state=%d\n",
+        Serial.printf("[ota-pull] installAsync: state=%d not AVAILABLE — re-checking\n",
+                      (int)g_status.state);
+        doCheck_();   // synchron: setzt AVAILABLE / IDLE / ERROR
+    }
+    if (g_status.state != State::AVAILABLE) {
+        Serial.printf("[ota-pull] installAsync rejected after re-check: state=%d\n",
                       (int)g_status.state);
         return false;
     }
