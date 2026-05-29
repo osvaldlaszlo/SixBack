@@ -152,6 +152,14 @@ public:
     // Loescht einen Speaker aus dem Cache (nicht vom Geraet).
     bool remove(const String& deviceId);
 
+    // Setzt die Anzeige-Reihenfolge der Speaker. `deviceIdOrder` listet die
+    // gewuenschte Reihenfolge; nicht genannte (neu entdeckte) Speaker bleiben
+    // in ihrer bisherigen relativen Reihenfolge hinten angehaengt. Die Order
+    // IST die Vektor-Reihenfolge — saveToNVS persistiert sie, daher haelt die
+    // Sortierung reboot- UND browseruebergreifend (kein localStorage). Liefert
+    // immer true (unbekannte IDs werden ignoriert, nicht als Fehler gewertet).
+    bool reorder(const std::vector<String>& deviceIdOrder);
+
     // Liefert Speaker per deviceId oder ip (nullable).
     Speaker* findById(const String& deviceId);
     Speaker* findByIp(const String& ip);

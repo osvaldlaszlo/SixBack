@@ -296,6 +296,25 @@ void handleSpeakerDelete(AsyncWebServerRequest* req) {
     req->send(ok ? 200 : 404, "application/json", ok ? "{\"ok\":true}" : "{\"error\":\"not found\"}");
 }
 
+// POST /api/speakers/order  body {"order":["<deviceId>", ...]}
+// Setzt die persistente Anzeige-Reihenfolge der Speaker (UI-Drag-to-Reorder).
+// Device-seitig (NVS) statt Browser-localStorage, damit die Sortierung
+// browseruebergreifend + reboot-fest ist (analog zur Stream-Library, #8).
+void handleSpeakersOrder(AsyncWebServerRequest* req, JsonDocument& body) {
+    JsonArray arr = body["order"].as<JsonArray>();
+    if (arr.isNull()) {
+        req->send(400, "application/json", "{\"error\":\"order array required\"}");
+        return;
+    }
+    std::vector<String> ids;
+    for (JsonVariant v : arr) {
+        const char* s = v.as<const char*>();
+        if (s && *s) ids.push_back(String(s));
+    }
+    sixback::SpeakerInventory::instance().reorder(ids);
+    req->send(200, "application/json", "{\"ok\":true}");
+}
+
 // -----------------------------------------------------------------------------
 // Speaker-Aktionen: migrate / revert / reboot / refresh-status
 // -----------------------------------------------------------------------------
@@ -3129,6 +3148,7 @@ void registerApiEndpoints(AsyncWebServer& ui) {
     ui.on("/api/speakers",            HTTP_GET,    handleSpeakersList);
     ui.on("/api/speakers/discover",   HTTP_POST,   handleDiscover);
     routeJsonBody(ui, "/api/speakers/add", HTTP_POST, handleSpeakerAdd);
+    routeJsonBody(ui, "/api/speakers/order", HTTP_POST, handleSpeakersOrder);
     routeT(ui, "^/api/speakers/([^/]+)$",  HTTP_DELETE, handleSpeakerDelete);
 
     // Stream-Library (custom radio-stream tiles) — device-side, not Spotify-gated.

@@ -101,6 +101,11 @@
             position: relative; cursor: pointer; transition: border-color .12s, background .12s, transform .08s; }
   .preset[draggable="true"] { cursor: grab; }
   .preset[draggable="true"]:active { cursor: grabbing; }
+  .sp-grip { cursor: grab; color: var(--mute); font-size: 1.05em; line-height: 1;
+             padding: 0 .2em; user-select: none; }
+  .sp-grip:active { cursor: grabbing; }
+  .speaker.reorder-over { outline: 2px dashed var(--accent); outline-offset: 2px; }
+  .speaker.reorder-dragging { opacity: .5; }
   .preset .slot { font-size: .7em; color: var(--mute); font-weight: 600; }
   .preset .pcover { width: 100%; aspect-ratio: 1 / 1; max-height: 96px;
                     object-fit: contain; background: #fff; border-radius: 4px;
@@ -1567,10 +1572,14 @@ function speakerCard(s, myBase) {
     : '';
   const open = isSpeakerOpen_(s.device_id);
   return `
-    <div class="speaker${open ? '' : ' collapsed'}" id="sp-${s.device_id}" data-device-id="${esc(s.device_id)}">
+    <div class="speaker${open ? '' : ' collapsed'}" id="sp-${s.device_id}" data-device-id="${esc(s.device_id)}"
+         ondragover="onSpeakerReorderOver(event,'${s.device_id}')" ondrop="onSpeakerReorderDrop(event,'${s.device_id}')">
       <div class="speaker-head">
         <div class="speaker-head-main">
           <div class="speaker-head-row" onclick="toggleSpeaker(event,'${s.device_id}')" title="Click to expand / collapse">
+            <span class="sp-grip" draggable="true" title="Drag to reorder speakers"
+                  ondragstart="onSpeakerReorderStart(event,'${s.device_id}')" ondragend="onSpeakerReorderEnd(event)"
+                  onclick="event.stopPropagation()">⠿</span>
             <span class="sp-toggle" id="chev-${s.device_id}">${open ? '▾' : '▸'}</span>
             <span class="sp-dot off" id="dot-${s.device_id}" title="status"></span>
             <div class="speaker-title">${esc(s.name || s.device_id)}  ${pillForStatus(s, myBase)}</div>
@@ -2035,6 +2044,69 @@ async function revertSlot(devId, slot) {
           'success');
   } catch (e) {
     toast('Undo failed: ' + e.message, 'error');
+  }
+}
+
+// ---- Speaker-card reorder (drag the ⠿ grip in the header) ------------------
+// Device-side order: on drop we POST the new device-id sequence to
+// /api/speakers/order; the backend reorders + persists in NVS, so the order
+// is the same in every browser and survives reboot. STATE.dragSpeaker gates
+// these handlers so they never interfere with preset drag (STATE.dragSource)
+// or external/file drops — the two drag kinds are mutually exclusive.
+function onSpeakerReorderStart(ev, devId) {
+  ev.stopPropagation();
+  STATE.dragSpeaker = devId;
+  ev.dataTransfer.effectAllowed = 'move';
+  try { ev.dataTransfer.setData('application/x-sixback-speaker-reorder', devId); } catch(e){}
+  try { ev.dataTransfer.setData('text/plain', devId); } catch(e){}
+  const card = document.getElementById('sp-' + devId);
+  if (card) card.classList.add('reorder-dragging');
+}
+function onSpeakerReorderEnd(ev) {
+  STATE.dragSpeaker = null;
+  document.querySelectorAll('.speaker.reorder-dragging, .speaker.reorder-over')
+    .forEach(el => el.classList.remove('reorder-dragging', 'reorder-over'));
+}
+function onSpeakerReorderOver(ev, devId) {
+  if (!STATE.dragSpeaker || STATE.dragSpeaker === devId) return;  // not a reorder
+  ev.preventDefault(); ev.stopPropagation();
+  ev.dataTransfer.dropEffect = 'move';
+  document.querySelectorAll('.speaker.reorder-over').forEach(el => el.classList.remove('reorder-over'));
+  const card = document.getElementById('sp-' + devId);
+  if (card) card.classList.add('reorder-over');
+}
+async function onSpeakerReorderDrop(ev, devId) {
+  if (!STATE.dragSpeaker || STATE.dragSpeaker === devId) return;
+  ev.preventDefault(); ev.stopPropagation();
+  const src = STATE.dragSpeaker;
+  STATE.dragSpeaker = null;
+  document.querySelectorAll('.speaker.reorder-over, .speaker.reorder-dragging')
+    .forEach(el => el.classList.remove('reorder-over', 'reorder-dragging'));
+  const order = STATE.speakers.map(s => s.device_id);
+  const from = order.indexOf(src);
+  if (from < 0) return;
+  order.splice(from, 1);
+  let to = order.indexOf(devId);
+  if (to < 0) return;
+  // Drop in the lower half of the target card → place AFTER it.
+  const card = document.getElementById('sp-' + devId);
+  if (card) {
+    const rect = card.getBoundingClientRect();
+    if (ev.clientY > rect.top + rect.height / 2) to += 1;
+  }
+  order.splice(to, 0, src);
+  // Optimistic: re-sort STATE + DOM immediately, then persist device-side.
+  const rank = new Map(order.map((id, i) => [id, i]));
+  STATE.speakers.sort((a, b) => (rank.get(a.device_id) ?? 0) - (rank.get(b.device_id) ?? 0));
+  renderSpeakers();
+  try {
+    await api('/api/speakers/order', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ order }),
+    });
+  } catch (e) {
+    toast('Reorder failed: ' + e.message, 'error');
+    loadSpeakers();  // fall back to the server's truth
   }
 }
 

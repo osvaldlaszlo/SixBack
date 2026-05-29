@@ -844,4 +844,31 @@ std::vector<Speaker> SpeakerInventory::list() {
     return speakers_;
 }
 
+bool SpeakerInventory::reorder(const std::vector<String>& deviceIdOrder) {
+    LockGuard g(*this);  // rekursiv — saveToNVS() nimmt ihn erneut
+    std::vector<Speaker> reordered;
+    reordered.reserve(speakers_.size());
+    std::vector<bool> taken(speakers_.size(), false);
+    // 1) In gewuenschter Reihenfolge uebernehmen (erstes ungenommenes Match).
+    for (const String& id : deviceIdOrder) {
+        for (size_t i = 0; i < speakers_.size(); ++i) {
+            if (!taken[i] && speakers_[i].deviceId == id) {
+                reordered.push_back(speakers_[i]);
+                taken[i] = true;
+                break;
+            }
+        }
+    }
+    // 2) Nicht genannte (neu entdeckte/unbekannte) in alter relativer
+    //    Reihenfolge hinten anhaengen — sonst wuerde ein Reorder waehrend
+    //    eines laufenden Scans frisch gefundene Speaker verlieren.
+    for (size_t i = 0; i < speakers_.size(); ++i) {
+        if (!taken[i]) reordered.push_back(speakers_[i]);
+    }
+    speakers_.swap(reordered);
+    saveToNVS();
+    Serial.printf("[inv] reorder applied — %u speakers\n", (unsigned)speakers_.size());
+    return true;
+}
+
 } // namespace sixback
