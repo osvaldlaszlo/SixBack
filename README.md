@@ -228,6 +228,13 @@ partitions-4mb.csv    4 MB partition table   (ESP32 / C3 / C6)
 platformio.ini        Multi-env config, see `[common]` + `[env:*]`
 ```
 
+## Support
+
+SixBack is free and open source. If it kept your speakers out of the
+landfill and you'd like to say thanks, there's a tip jar via
+[PayPal](https://paypal.me/busware) — entirely optional, and it helps keep
+the lab stocked with test hardware. A ⭐ on the repo is just as welcome.
+
 ## Acknowledgements
 
 - **[julius-d/ueberboese-api](https://github.com/julius-d/ueberboese-api)** —
