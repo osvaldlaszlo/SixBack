@@ -17,7 +17,7 @@ No subscription, no account, no Bose servers.  One USB stick on your LAN.
 > functionality is preserved; the rename reflects the project's identity
 > independent of any Bose trademark.
 
-## Status (v0.8.3)
+## Status (v0.8.4)
 
 | Component                                                            | State                                                                                                              |
 | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
@@ -48,6 +48,7 @@ No subscription, no account, no Bose servers.  One USB stick on your LAN.
 | Diagnostic snapshot (v0.6.0)                                         | working — `GET /api/speaker/{id}/diagnostic-snapshot` + one-shot pre-migrate snapshot persisted to `/snapshots/{deviceId}.json`; WebUI download or "Send to maintainer" upload to `sixback.io/snapshots/bosefix/snapshot` |
 | OTA — app & LittleFS                                                 | working — `UPDATE_SIZE_UNKNOWN` + stream-to-EOF + 90% sanity-abort (v0.7.0 fix for HTTPS Content-Length truncation) |
 | **OTA install — self-validating + clear status** (v0.8.3)            | working — the *Install* action re-checks the manifest itself instead of gating on a stale prior check, so a legitimate update is never blocked by a misleading "no update available"; distinct messages for *server unreachable* (retry) vs *already up-to-date* (use Force re-install); the WebUI panel always reflects the real state, so an error can no longer sit next to a stale "available" |
+| **Manual "Flash web UI" — full-size S3 image** (v0.8.4)              | working — the WebUI upload guard rejected the ~9.9 MB S3 LittleFS image against a leftover 1 MB cap; raised to 11 MB so a manual FS upload matches the S3 spiffs partition. Verified end-to-end on S3 test hardware (~9.9 MB upload written, rebooted, FS intact). Also in v0.8.4: larger at-a-glance speaker status dots, and a GitHub project link in the WebUI + landing-page footer |
 | **Tag-based release versioning** (v0.7.6)                            | working — `RELEASE_TAG` env bakes the same version string into all four target firmwares; eliminates multi-target build-drift |
 | **Build size-gate** (v0.7.5)                                         | working — `build_release.sh` aborts if any firmware or LittleFS image exceeds its partition slot                   |
 | **Asymmetric OTA partition** (C3 / C6, v0.7.7)                       | working — app0 = 2.5 MB (full SixBack incl. Spotify), app1 = 1 MB recovery slot (currently empty); spiffs 384 KB; **new install needs USB-flash** (image too large for old 1.81 MB slots) |

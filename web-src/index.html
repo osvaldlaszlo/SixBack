@@ -71,8 +71,8 @@
   .speaker-head-row { display: flex; align-items: center; gap: .5em; cursor: pointer; }
   .sp-toggle { color: var(--mute); font-size: .8em; width: 1em; flex: none;
                user-select: none; text-align: center; }
-  .sp-dot { width: .72em; height: .72em; border-radius: 50%; flex: none;
-            box-sizing: border-box; border: 2px solid var(--mute); background: transparent; }
+  .sp-dot { width: 1.05em; height: 1.05em; border-radius: 50%; flex: none;
+            box-sizing: border-box; border: 2.5px solid var(--mute); background: transparent; }
   .sp-dot.on       { background: #2ecc71; border-color: #27a05a; }
   .sp-dot.off      { background: transparent; border-color: var(--mute); }
   .sp-dot.offline  { background: #e74c3c; border-color: #c0392b; }
@@ -1046,10 +1046,15 @@ async function toggleDiagShare(en) {
 // ---- OTA (Firmware-Tile) ----
 // Sanity-Limits — eher grob aber faengt offensichtliche Fehlauswahl ab
 // (jemand laed das LittleFS-Image als App-Firmware hoch oder umgekehrt).
+// fs.max muss das groesste FS-Image aller OTA-faehigen Targets zulassen:
+// der S3 hat eine 10-MB-spiffs-Partition (0x9E0000), sein littlefs.bin ist
+// ~9.88 MB. Frueher stand der Cap auf 1 MB (Relikt der 256-KB-C-Varianten)
+// und lehnte jeden manuellen S3-"Flash web UI" sofort ab. Die echte
+// Partitionsgrenze prueft Update.cpp; dieser Wert ist nur ein Sanity-Guard.
 const FW_LIMITS = {
-  app: { min:  512*1024, max: 4*1024*1024, label: 'App firmware',
+  app: { min:  512*1024, max: 4*1024*1024,  label: 'App firmware',
          hint: 'name muss *-firmware.bin sein' },
-  fs:  { min:   32*1024, max: 1*1024*1024, label: 'Web UI (LittleFS)',
+  fs:  { min:   32*1024, max: 11*1024*1024, label: 'Web UI (LittleFS)',
          hint: 'name muss *-littlefs.bin sein' }
 };
 
@@ -4822,6 +4827,7 @@ setInterval(loadSpotifyTriggers, 5000);   // alle 5s damit User schnell sieht ob
 <footer style="margin-top:3em;padding-top:1em;border-top:1px solid #e1ddd2;color:#777;font-size:.8em;text-align:center">
   <a href="https://sixback.io/" target="_blank" rel="noopener" style="color:#777">SixBack</a> &copy; 2026
   <a href="mailto:tostmann@gmail.com" style="color:#777">Dirk Tostmann</a> &middot;
+  <a href="https://github.com/tostmann/SixBack" target="_blank" rel="noopener" style="color:#777">GitHub</a> &middot;
   <a href="https://polyformproject.org/licenses/noncommercial/1.0.0/" target="_blank" rel="noopener" style="color:#777">PolyForm Noncommercial 1.0.0</a> &middot;
   Personal/hobby/research use only &middot;
   Not affiliated with Bose Corporation
