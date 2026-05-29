@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <title>SixBack — Control</title>
+<link rel="icon" type="image/png" href="/assets/sixback-mark.png">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
   :root {
@@ -437,7 +438,12 @@
         <button class="primary" onclick="streamAddTile()" id="stream-add-btn">+ Add &amp; validate</button>
       </div>
       <div class="sb-stream-meta" id="stream-meta"></div>
-      <div class="sb-hint"><span class="dnd-strong">↦ Drag a validated tile onto a preset slot</span> to save it there.<br>
+      <div class="sb-controls" style="gap:.4em">
+        <button onclick="streamExport()" title="Download all saved streams as a JSON file (backup, or move to another browser/device)">⬇ Export</button>
+        <button onclick="streamImport()" title="Import a previously exported stream-set JSON (merges into the device store)">⬆ Import</button>
+      </div>
+      <div class="sb-hint">Streams are stored <b>on the device</b> now — visible in every browser and kept across a USB re-flash.<br>
+        <span class="dnd-strong">↦ Drag a validated tile onto a preset slot</span> to save it there.<br>
         Validator probes the URL (HEAD/ICY) on the proxy; bad URLs are flagged.<br>
         <b style="color:#7a5400">HTTP URLs work best</b> — old Bose-FW (2021) can't validate Cloudflare/Let's-Encrypt certs on HTTPS streams, the speaker drops them as <code>INVALID_SOURCE</code>.</div>
       <div class="sb-grid" id="stream-grid">
@@ -2606,6 +2612,7 @@ function sidebarSelectTab(name) {
     loadSpotifyTriggers();
     loadSpotifyLibrary();
   }
+  if (name === 'stream') loadStreamLibrary();   // device-side now → refresh cross-browser
   if (name === 'dlna') {
     refreshDlnaSpeakerPicker();
     if (!STATE.dlnaServerControlUrl) loadDlnaServers();
@@ -2650,23 +2657,32 @@ async function streamAddTile() {
     meta.textContent = '✗ ' + (v.error || 'invalid stream');
     return;
   }
-  // Use the auto-detected ICY name if user left it blank? No — name field was required.
-  // But we surface ICY metadata in the tooltip.
-  const tile = {
-    name,
-    streamUrl: v.redirected_to || url,    // follow server-side redirects
-    imageUrl: img,
-    icyName: v.icy_name || '',
-    contentType: v.content_type || '',
-    bitrate: v.icy_br || '',
-  };
-  STATE.streamTiles.push(tile);
-  try { localStorage.SIXBACK_STREAM_TILES = JSON.stringify(STATE.streamTiles); } catch(e){}
+  // Persist device-side (NVS) so the tile is cross-browser and survives a
+  // USB-erase — mirrors the Spotify-Library. stream_url is the primary key.
+  const streamUrl = v.redirected_to || url;    // follow server-side redirects
+  try {
+    await api('/api/streams', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({
+        name,
+        stream_url:   streamUrl,
+        image_url:    img,
+        icy_name:     v.icy_name || '',
+        content_type: v.content_type || '',
+        bitrate:      v.icy_br || '',
+      }),
+    });
+  } catch (e) {
+    meta.className = 'sb-stream-meta bad';
+    meta.textContent = 'Stream is valid but saving to the device failed: ' + e.message;
+    return;
+  }
   meta.className = 'sb-stream-meta ok';
   meta.textContent = '✓ ' + (v.icy_name ? `${v.icy_name} · ` : '') +
                      (v.content_type || '') + (v.icy_br ? ` · ${v.icy_br}k` : '');
   nameEl.value = ''; urlEl.value = ''; imgEl.value = '';
-  renderStreamTiles();
+  await loadStreamLibrary();
 }
 
 function renderStreamTiles() {
@@ -2699,18 +2715,113 @@ function renderStreamTiles() {
   }).join('');
 }
 
-function streamRemoveTile(idx) {
-  STATE.streamTiles.splice(idx, 1);
-  try { localStorage.SIXBACK_STREAM_TILES = JSON.stringify(STATE.streamTiles); } catch(e){}
+async function streamRemoveTile(idx) {
+  const s = STATE.streamTiles[idx];
+  if (!s) return;
+  try {
+    await api('/api/streams?url=' + encodeURIComponent(s.streamUrl), { method: 'DELETE' });
+  } catch (e) {
+    toast('Remove failed: ' + e.message, 'error');
+    return;
+  }
+  await loadStreamLibrary();
+}
+
+// Load the device-side stream library (GET /api/streams). The tiles live on
+// the ESP (NVS) now, so they are cross-browser and survive a USB-erase.
+// One-time: migrate any legacy browser-localStorage streams up to the device,
+// then mark migrated (guarded so an intentional delete can't resurrect them).
+async function loadStreamLibrary() {
+  let items = [];
+  try {
+    const r = await api('/api/streams');
+    items = (r && r.items) || [];
+  } catch (_) { items = []; }
+  if (!localStorage.SIXBACK_STREAM_MIGRATED) {
+    let legacy = [];
+    try { legacy = JSON.parse(localStorage.SIXBACK_STREAM_TILES || '[]') || []; } catch(_) {}
+    if (items.length === 0 && legacy.length) {
+      try {
+        await api('/api/streams/import', {
+          method: 'POST',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ items: legacy.map(s => ({
+            name: s.name, stream_url: s.streamUrl, image_url: s.imageUrl || '',
+            icy_name: s.icyName || '', content_type: s.contentType || '', bitrate: s.bitrate || '',
+          })) }),
+        });
+        toast(`Migrated ${legacy.length} saved stream(s) from this browser to the device.`, 'success');
+        const r2 = await api('/api/streams');
+        items = (r2 && r2.items) || [];
+      } catch(_) {}
+    }
+    try { localStorage.SIXBACK_STREAM_MIGRATED = '1'; } catch(_) {}
+  }
+  STATE.streamTiles = items.map(it => ({
+    name: it.name, streamUrl: it.stream_url, imageUrl: it.image_url || '',
+    icyName: it.icy_name || '', contentType: it.content_type || '', bitrate: it.bitrate || '',
+  }));
   renderStreamTiles();
 }
 
-function streamLoadFromLocalStorage() {
-  try {
-    const raw = localStorage.SIXBACK_STREAM_TILES;
-    if (raw) STATE.streamTiles = JSON.parse(raw) || [];
-  } catch(e) { STATE.streamTiles = []; }
-  renderStreamTiles();
+// Export all device-side streams as a JSON file (backup / move to another
+// browser or device). Symmetric with streamImport (snake_case items[]).
+function streamExport() {
+  const payload = {
+    kind: 'sixback-streams',
+    version: 1,
+    items: STATE.streamTiles.map(s => ({
+      name: s.name, stream_url: s.streamUrl, image_url: s.imageUrl || '',
+      icy_name: s.icyName || '', content_type: s.contentType || '', bitrate: s.bitrate || '',
+    })),
+  };
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(payload, null, 2)], {type:'application/json'}));
+  a.download = 'sixback-streams.json';
+  a.style.display = 'none';
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { a.remove(); URL.revokeObjectURL(a.href); }, 100);
+  toast(`Exported ${payload.items.length} stream(s).`, 'success');
+}
+
+// Import a previously exported stream-set JSON (merges into the device store).
+function streamImport() {
+  const inp = document.createElement('input');
+  inp.type = 'file';
+  inp.accept = '.json,application/json';
+  inp.style.display = 'none';
+  inp.addEventListener('change', async () => {
+    const f = inp.files && inp.files[0];
+    inp.remove();
+    if (!f) return;
+    let parsed;
+    try { parsed = JSON.parse(await f.text()); }
+    catch (e) { toast('Selected file is not valid JSON', 'error'); return; }
+    const raw = Array.isArray(parsed) ? parsed : (parsed.items || []);
+    const items = raw.map(s => ({
+      name:         s.name || '',
+      stream_url:   s.stream_url   || s.streamUrl   || '',
+      image_url:    s.image_url    || s.imageUrl    || '',
+      icy_name:     s.icy_name     || s.icyName     || '',
+      content_type: s.content_type || s.contentType || '',
+      bitrate:      s.bitrate || '',
+    })).filter(s => s.stream_url);
+    if (!items.length) { toast('No streams found in that file', 'error'); return; }
+    try {
+      const r = await api('/api/streams/import', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ items }),
+      });
+      toast(`Imported ${(r && r.imported) || items.length} stream(s).`, 'success');
+      await loadStreamLibrary();
+    } catch (e) {
+      toast('Import failed: ' + e.message, 'error');
+    }
+  });
+  document.body.appendChild(inp);
+  inp.click();
 }
 
 function onLibrarySearchInput() {
@@ -4782,7 +4893,7 @@ async function spotifyClearSlotModal() {
   }
 }
 
-streamLoadFromLocalStorage();
+loadStreamLibrary();
 // D&D-Hinweis-Banner: persistent dismiss via localStorage. Wer ihn weggeklickt
 // hat, sieht ihn nicht wieder (es sei denn, localStorage wird geleert).
 try {

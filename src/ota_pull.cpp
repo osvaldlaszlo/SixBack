@@ -48,9 +48,15 @@ const char* chipPrefix_() {
 Status            g_status;
 SemaphoreHandle_t g_mtx = nullptr;
 
-// Vergleicht zwei Versions-Strings im Format "MAJOR.MINOR.BUILD".
+// Vergleicht zwei Versions-Strings. Nur der fuehrende MAJOR.MINOR.PATCH-Kern
+// zaehlt: sscanf("%d.%d.%d") stoppt am ersten Nicht-Ziffer-Zeichen, also wird
+// das semver-Build-Metadata-Suffix eines Dev-Builds ("0.8.4+1116") ignoriert
+// und vergleicht gleich zu seinem Basis-Release "0.8.4". Das ist Absicht — der
+// Build-Counter liegt hinter dem '+' (siehe scripts/version_bump.py::
+// _last_release_core), damit ein Dev-Build nie wie ein hoeherer Patch als das
+// naechste Release aussieht (frueherer Bug: "0.8.1105" > "0.8.4" -> kein Update).
+// Releases tragen einen sauberen "MAJOR.MINOR.PATCH"-Tag.
 // Return: -1 wenn a < b, 0 wenn gleich, +1 wenn a > b, -2 bei Parse-Fehler.
-// BUILD ist monotone, MAJOR+MINOR werden vom User explizit gesetzt.
 int semverCompare_(const String& a, const String& b) {
     int aMaj=0, aMin=0, aBld=0, bMaj=0, bMin=0, bBld=0;
     int aGot = sscanf(a.c_str(), "%d.%d.%d", &aMaj, &aMin, &aBld);

@@ -23,6 +23,7 @@
 #include "api_endpoints.h"
 #include "event_store.h"
 #include "spotify_player.h"
+#include "stream_library.h"
 #include "wifi_provisioning.h"
 #include "speaker_inventory.h"
 #include "preset_store.h"
@@ -87,6 +88,7 @@ static void startMDNS() {
 static void startBoseServer() {
     sixback::eventStoreInit();
     sixback::spotify::init();      // registriert preset-pressed-Callback
+    sixback::streams::init();      // lädt gerätenahe Stream-Library aus NVS
     boseServer.begin();            // routes already registered early in setup()
     Serial.printf("[bose] cloud-replacement listening on :%d\n", BOSE_HTTP_PORT);
     Serial.printf("[bose] tell speakers to use: http://%s:%d\n",

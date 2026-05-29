@@ -60,11 +60,13 @@ fi
 "$HOME/.platformio/penv/bin/pio" run -e s3 -e c3 -e c6 -e esp32 -t buildfs
 "$HOME/.platformio/penv/bin/pio" run -e s3 -e c3 -e c6 -e esp32
 
-# Resolve final version: tag if set, else read counter from version.h.
+# Resolve final version: tag if set, else read the core from version.h.
+# Dev FW_VERSION_STRING carries a "+<counter>" suffix (e.g. "0.8.4+1116");
+# take only the leading MAJOR.MINOR.PATCH so the manifest version stays clean.
 if [ -n "$RELEASE_TAG_STRIPPED" ]; then
   VERSION="$RELEASE_TAG_STRIPPED"
 else
-  VERSION="$(grep -oE '"[0-9]+\.[0-9]+\.[0-9]+"' "$ROOT/src/version.h" | tr -d '"')"
+  VERSION="$(grep -oE 'FW_VERSION_STRING "[^"]+"' "$ROOT/src/version.h" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
 fi
 echo ">>> SixBack release build, version=$VERSION"
 
@@ -246,4 +248,4 @@ ls -lh "$OUT"/*.bin "$OUT"/manifest*.json
 echo
 echo "Public landing page:  https://sixback.io/"
 echo "Deploy command (user triggers manually):"
-echo "  rsync -avr webflasher/ 10.10.22.1:/var/www/install/sixback/"
+echo "  rsync -avr webflasher/ 10.0.0.100:/var/www/install/sixback/   # vServer (sixback.io = 31.70.64.234); 10.10.22.1/install.busware.de ist tot"

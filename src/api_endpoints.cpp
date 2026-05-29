@@ -32,6 +32,7 @@
 #include "speaker_diagnostic.h"
 #include "diag_settings.h"
 #include "spotify_player.h"
+#include "stream_library.h"
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <WiFi.h>
@@ -211,6 +212,13 @@ void handleSpeakersList(AsyncWebServerRequest* req) {
 
 void discoverWorker_(void* /*arg*/) {
     sixback::SpeakerInventory::instance().discover();
+    // Stack-Headroom messen, bevor sich der Task selbst loescht. ESP-IDF gibt
+    // den High-Water-Mark in Bytes zurueck (= kleinster je freier Stack-Rest).
+    // Diente zur Verifikation des bg-discover-Stack-Overflow-Fixes (v0.8.4);
+    // bleibt als Telemetrie fuer grosse Setups (viele Speaker = tiefere Probes).
+    UBaseType_t freeBytes = uxTaskGetStackHighWaterMark(nullptr);
+    Serial.printf("[inv] bg-discover done — stack high-water-mark=%u bytes free (of 8192)\n",
+                  (unsigned)freeBytes);
     vTaskDelete(nullptr);
 }
 
@@ -223,7 +231,12 @@ void handleDiscover(AsyncWebServerRequest* req) {
     // returnen einfach den aktuellen Stand.
     auto& inv = sixback::SpeakerInventory::instance();
     if (!inv.isScanRunning()) {
-        BaseType_t r = xTaskCreate(discoverWorker_, "bg-discover", 4096,
+        // 8192 statt 4096: discover() faehrt knownIpProbe_ + ssdpMSearch_ +
+        // refreshMigrationStatus, alle mit HTTPClient/Telnet (lwIP-Tiefe ~1.5-2 KB)
+        // ueber alle Speaker. Mit 4 KB lief der Task auf grossen Setups (9 Speaker)
+        // ueber -> "Stack canary watchpoint triggered (bg-discover)" in v0.8.4.
+        // 8192 entspricht den anderen netz-I/O-Tasks (auto-mode, ota-pull).
+        BaseType_t r = xTaskCreate(discoverWorker_, "bg-discover", 8192,
                                     nullptr, tskIDLE_PRIORITY + 1, nullptr);
         if (r != pdPASS) {
             req->send(503, "application/json", "{\"error\":\"task spawn failed\"}");
@@ -3021,6 +3034,92 @@ void handleSpotifyLibraryDelete(AsyncWebServerRequest* req) {
 
 #endif // SIXBACK_SPOTIFY_ENABLED
 
+// -----------------------------------------------------------------------------
+// Stream-Library — device-side storage for custom radio-stream tiles (the
+// "Stream" sidebar tab). Mirrors the Spotify-Library API but is NOT gated on
+// Spotify — every build has it. stream_url is the primary key. Drag-onto-slot
+// behaviour is unchanged (frontend still creates a TUNEIN-tunnel preset).
+// -----------------------------------------------------------------------------
+// GET /api/streams — all stored stream tiles
+void handleStreamsList(AsyncWebServerRequest* req) {
+    JsonDocument doc;
+    JsonArray arr = doc["items"].to<JsonArray>();
+    for (const auto& it : sixback::streams::listStreams()) {
+        JsonObject o = arr.add<JsonObject>();
+        o["name"]         = it.name;
+        o["stream_url"]   = it.streamUrl;
+        o["image_url"]    = it.imageUrl;
+        o["icy_name"]     = it.icyName;
+        o["content_type"] = it.contentType;
+        o["bitrate"]      = it.bitrate;
+    }
+    String body; serializeJson(doc, body);
+    req->send(200, "application/json", body);
+}
+
+// POST /api/streams
+// Body: {name, stream_url, image_url, icy_name?, content_type?, bitrate?}
+// Upsert per stream_url. Returns {ok:true, created:bool}.
+void handleStreamsAdd(AsyncWebServerRequest* req, JsonDocument& body) {
+    sixback::streams::StreamItem it;
+    it.name        = (const char*)(body["name"]         | "");
+    it.streamUrl   = (const char*)(body["stream_url"]   | "");
+    it.imageUrl    = (const char*)(body["image_url"]    | "");
+    it.icyName     = (const char*)(body["icy_name"]     | "");
+    it.contentType = (const char*)(body["content_type"] | "");
+    it.bitrate     = (const char*)(body["bitrate"]      | "");
+    if (it.streamUrl.length() == 0) {
+        req->send(400, "application/json", "{\"error\":\"stream_url required\"}");
+        return;
+    }
+    if (it.name.length() == 0) it.name = it.streamUrl;
+    bool created = sixback::streams::addStreamItem(it);
+    JsonDocument out;
+    out["ok"]      = true;
+    out["created"] = created;
+    String s; serializeJson(out, s);
+    req->send(200, "application/json", s);
+}
+
+// DELETE /api/streams?url=<stream_url>
+// Query-param (not path) because a stream URL contains '/' and ':'.
+void handleStreamsDelete(AsyncWebServerRequest* req) {
+    if (!req->hasParam("url")) {
+        req->send(400, "application/json", "{\"error\":\"url query-param required\"}");
+        return;
+    }
+    bool removed = sixback::streams::removeStreamItem(req->getParam("url")->value());
+    JsonDocument out;
+    out["ok"]      = true;
+    out["removed"] = removed;
+    String s; serializeJson(out, s);
+    req->send(200, "application/json", s);
+}
+
+// POST /api/streams/import  Body: {items:[{name, stream_url, ...}, ...]}
+// Bulk merge — upserts each item by stream_url. Returns {ok:true, imported:N}.
+void handleStreamsImport(AsyncWebServerRequest* req, JsonDocument& body) {
+    int imported = 0;
+    for (JsonObject o : body["items"].as<JsonArray>()) {
+        sixback::streams::StreamItem it;
+        it.name        = (const char*)(o["name"]         | "");
+        it.streamUrl   = (const char*)(o["stream_url"]   | "");
+        it.imageUrl    = (const char*)(o["image_url"]    | "");
+        it.icyName     = (const char*)(o["icy_name"]     | "");
+        it.contentType = (const char*)(o["content_type"] | "");
+        it.bitrate     = (const char*)(o["bitrate"]      | "");
+        if (it.streamUrl.length() == 0) continue;
+        if (it.name.length() == 0) it.name = it.streamUrl;
+        sixback::streams::addStreamItem(it);
+        imported++;
+    }
+    JsonDocument out;
+    out["ok"]       = true;
+    out["imported"] = imported;
+    String s; serializeJson(out, s);
+    req->send(200, "application/json", s);
+}
+
 void registerApiEndpoints(AsyncWebServer& ui) {
     // Statische Assets aus LittleFS (CSS, JS, etc.)
     ui.serveStatic("/assets/", LittleFS, "/assets/").setCacheControl("max-age=600");
@@ -3031,6 +3130,12 @@ void registerApiEndpoints(AsyncWebServer& ui) {
     ui.on("/api/speakers/discover",   HTTP_POST,   handleDiscover);
     routeJsonBody(ui, "/api/speakers/add", HTTP_POST, handleSpeakerAdd);
     routeT(ui, "^/api/speakers/([^/]+)$",  HTTP_DELETE, handleSpeakerDelete);
+
+    // Stream-Library (custom radio-stream tiles) — device-side, not Spotify-gated.
+    routeT(ui, "^/api/streams$",         HTTP_GET,    handleStreamsList);
+    routeJsonBody(ui, "^/api/streams$",  HTTP_POST,   handleStreamsAdd);
+    routeT(ui, "^/api/streams$",         HTTP_DELETE, handleStreamsDelete);
+    routeJsonBody(ui, "^/api/streams/import$", HTTP_POST, handleStreamsImport);
     routeT(ui, "^/api/speaker/([^/]+)/migrate$",        HTTP_POST, handleMigrate);
     routeT(ui, "^/api/speaker/([^/]+)/reboot$",         HTTP_POST, handleReboot);
     ui.on("/api/speakers/refresh-status",          HTTP_POST, handleRefreshStatus);

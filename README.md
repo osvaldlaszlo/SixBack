@@ -17,7 +17,7 @@ No subscription, no account, no Bose servers.  One USB stick on your LAN.
 > functionality is preserved; the rename reflects the project's identity
 > independent of any Bose trademark.
 
-## Status (v0.8.4)
+## Status (v0.8.5)
 
 | Component                                                            | State                                                                                                              |
 | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
@@ -45,6 +45,7 @@ No subscription, no account, no Bose servers.  One USB stick on your LAN.
 | **IP-Failsafe** — auto-remigrate on ESP-IP change, with pre-probe    | working — skips speakers already on the new base                                                                   |
 | **SETTLING status** (v0.6.541)                                       | working — backend reports `settling` instead of `offline` when only Telnet:17000 is down but BMX:8090 still answers |
 | Preset UI — drag&drop, dual-row (HW vs Store), per-slot revert       | working — modal progress, per-speaker export/import, refresh discards unsaved (v0.7.3)                             |
+| **Custom stream library — device-side** (v0.8.5)                     | working — Stream-tab tiles persist in device NVS instead of per-browser localStorage; `GET/POST/DELETE /api/streams` + bulk import, one-time localStorage→device migration, Export/Import; survives USB-erase and browser change |
 | Diagnostic snapshot (v0.6.0)                                         | working — `GET /api/speaker/{id}/diagnostic-snapshot` + one-shot pre-migrate snapshot persisted to `/snapshots/{deviceId}.json`; WebUI download or "Send to maintainer" upload to `sixback.io/snapshots/bosefix/snapshot` |
 | OTA — app & LittleFS                                                 | working — `UPDATE_SIZE_UNKNOWN` + stream-to-EOF + 90% sanity-abort (v0.7.0 fix for HTTPS Content-Length truncation) |
 | **OTA install — self-validating + clear status** (v0.8.3)            | working — the *Install* action re-checks the manifest itself instead of gating on a stale prior check, so a legitimate update is never blocked by a misleading "no update available"; distinct messages for *server unreachable* (retry) vs *already up-to-date* (use Force re-install); the WebUI panel always reflects the real state, so an error can no longer sit next to a stale "available" |
@@ -55,7 +56,8 @@ No subscription, no account, no Bose servers.  One USB stick on your LAN.
 | WiFi provisioning — Improv-Serial (idle-window) + Captive AP         | working — both armed in parallel on cold boot                                                                      |
 | **ESP32-C6 WPA2 reliability**                                        | working — `WiFi.setSleep(WIFI_PS_NONE)` + `setAutoReconnect(true)` applied **before** `WiFi.begin()`; closes 4-Way-Handshake-Timeout on WPA2-Mixed APs |
 | System health — Task-WDT, WiFi / heap watchdog, crash counter, self-ping | working                                                                                                        |
-| Builds for **ESP32-S3 ★ / ESP32-C3 / ESP32-C6**                      | working — S3 is the recommended target; ESP32-classic temporarily dropped from v0.8.0 (Web-UI growth exceeded the 256 KB spiffs slot in `partitions-4mb.csv` — followup will rebalance the symmetric 4 MB layout) |
+| **Discovery stack-safety** (v0.8.5)                                  | working — the background discovery worker no longer overruns its task stack on setups with many speakers: SSDP responder collection and per-speaker probing now run in separate stack frames and the worker stack was enlarged. Fixes a stack-canary crash that rebooted the device mid-scan and left discovery finding 0 speakers (manual add still worked). Verified across S3 / C6 / C3 |
+| Builds for **ESP32-S3 ★ / ESP32-C3 / ESP32-C6 / ESP32-classic**      | working — S3 is the recommended target; ESP32-classic re-enabled (`scripts/fs_exclude_esp32.py` trims the Spotify-only `silence.mp3` from its LittleFS image so the Web UI fits the 256 KB spiffs slot of `partitions-4mb.csv`) |
 | ESP-Web-Tools landing page (auto-detects chip)                       | working — <https://sixback.io/>                                                                                    |
 
 ## Install (recommended)
@@ -145,7 +147,7 @@ page auto-redirects to the device's freshly assigned LAN IP via
 | Chip          | Board reference                  | Flash | Notes                                                            |
 | ------------- | -------------------------------- | ----- | ---------------------------------------------------------------- |
 | **ESP32-S3 ★**| `esp32-s3-devkitc-1` (N16R8V)    | 16 MB | **recommended** — 8 MB PSRAM, mature WiFi 5 stack, comfortable flash headroom |
-| ESP32         | `esp32dev` (DevKitC-1)           | 4 MB  | classic — source build works; **not shipped in v0.8.0** while the symmetric 4 MB partition layout (1.81 MB app slots, 256 KB spiffs) gets rebalanced to fit the grown Web UI |
+| ESP32         | `esp32dev` (DevKitC-1)           | 4 MB  | classic — **shipped again** (v0.8.x); `scripts/fs_exclude_esp32.py` trims the Spotify-only `silence.mp3` from its LittleFS image so the gzipped Web UI fits the 256 KB spiffs slot |
 | ESP32-C3      | `esp32-c3-devkitm-1`             | 4 MB  | flashes over the chip's built-in USB-Serial-JTAG                 |
 | ESP32-C6      | `esp32-c6-devkitc-1`             | 4 MB  | WiFi 6 — works, but cold-start discovery occasionally drops SSDP-multicast packets and rare HTTP-server hangs need a reset |
 
@@ -157,12 +159,10 @@ and produced one HTTP-server hang that recovered only after a hardware
 reset.  The extra ~5 € for an S3-DevKitC-1-N16R8 buys noticeable
 robustness and ~40 % free flash for future features.
 
-C3 and C6 are fully functional and stay built/published on every release;
-both sit at ~52 % flash use under v0.8.0 (single-app no-OTA layout, 3.5 MB
-slot, ~1.75 MB image).  ESP32-classic builds from source but is not
-published in v0.8.0 — the symmetric 4 MB layout's 256 KB spiffs slot can
-no longer hold the gzipped Web UI plus the Spotify-trigger silence stub;
-a follow-up will rebalance partitions.
+C3, C6 and ESP32-classic are fully functional and stay built/published on
+every release.  ESP32-classic is published again: `scripts/fs_exclude_esp32.py`
+strips the Spotify-only `silence.mp3` stub from its LittleFS image so the
+gzipped Web UI fits the 256 KB spiffs slot of `partitions-4mb.csv`.
 
 All four targets share the same source tree and the same Web UI; the
 PlatformIO `extends = common` mechanism keeps the per-target diff small

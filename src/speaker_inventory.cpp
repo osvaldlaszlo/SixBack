@@ -55,6 +55,55 @@ bool telnetSend(WiFiClient& c, const String& cmd, String& reply, uint32_t timeou
     return false;
 }
 
+// SSDP-Sammelphase, bewusst als EIGENE Funktion (nicht inline in
+// ssdpMSearch_): M-SEARCH-Burst senden, 4 s lauschen und die eindeutigen
+// Responder-IPs einsammeln. Sobald diese Funktion zurueckkehrt, sind der
+// 1-KB-Empfangspuffer + der WiFiUDP-Frame garantiert vom Stack verschwunden.
+// Frueher wurde probeIp_() (HTTPClient -> lwIP, ~1.5-2 KB) noch INNERHALB der
+// Empfangsschleife aufgerufen, also mit buf[1024] live darunter — das sprengte
+// auf grossen Setups (9 Speaker) den 4-KB-Stack des bg-discover-Tasks:
+// "Stack canary watchpoint triggered (bg-discover)" in v0.8.4.
+void ssdpCollectCandidates_(std::vector<String>& outIps) {
+    WiFiUDP udp;
+    if (!udp.begin(0)) return;
+    const char* msg =
+        "M-SEARCH * HTTP/1.1\r\n"
+        "HOST: 239.255.255.250:1900\r\n"
+        "MAN: \"ssdp:discover\"\r\n"
+        "MX: 3\r\n"
+        "ST: urn:schemas-upnp-org:device:MediaRenderer:1\r\n\r\n";
+    IPAddress mcast(239, 255, 255, 250);
+    for (int i = 0; i < 3; ++i) {
+        udp.beginPacket(mcast, 1900);
+        udp.write((const uint8_t*)msg, strlen(msg));
+        udp.endPacket();
+        delay(150);
+    }
+    Serial.println("[inv][ssdp] M-SEARCH burst sent, listening 4s ...");
+    uint32_t deadline = millis() + 4000;
+    char buf[1024];
+    while (millis() < deadline) {
+        int n = udp.parsePacket();
+        if (n <= 0) { delay(20); continue; }
+        IPAddress src = udp.remoteIP();
+        int len = udp.read(buf, sizeof(buf) - 1);
+        if (len <= 0) continue;
+        buf[len] = 0;
+        // Nur SoundTouch-typische Responses mit Location-Header beachten.
+        // Bose-Speaker liefern z.B. http://192.168.1.50:8091/XD/BO5EBO5E-...
+        // strstr auf dem NUL-terminierten buf statt String(buf) -> spart die
+        // 1-KB-Heap-Kopie pro Paket.
+        if (!strstr(buf, "Location: http://")) continue;
+        String srcIp = src.toString();
+        // De-Dup: 3x-Burst + Mehrfach-Antworten pro Geraet wuerden sonst
+        // denselben Speaker mehrfach proben.
+        bool dup = false;
+        for (const auto& ip : outIps) { if (ip == srcIp) { dup = true; break; } }
+        if (!dup) outIps.push_back(srcIp);
+    }
+    udp.stop();
+}
+
 } // anon
 
 SpeakerInventory& SpeakerInventory::instance() {
@@ -263,36 +312,14 @@ bool SpeakerInventory::probeIp_(const String& ip, Speaker& out,
 }
 
 void SpeakerInventory::ssdpMSearch_() {
-    WiFiUDP udp;
-    if (!udp.begin(0)) return;
-    const char* msg =
-        "M-SEARCH * HTTP/1.1\r\n"
-        "HOST: 239.255.255.250:1900\r\n"
-        "MAN: \"ssdp:discover\"\r\n"
-        "MX: 3\r\n"
-        "ST: urn:schemas-upnp-org:device:MediaRenderer:1\r\n\r\n";
-    IPAddress mcast(239, 255, 255, 250);
-    for (int i = 0; i < 3; ++i) {
-        udp.beginPacket(mcast, 1900);
-        udp.write((const uint8_t*)msg, strlen(msg));
-        udp.endPacket();
-        delay(150);
-    }
-    Serial.println("[inv][ssdp] M-SEARCH burst sent, listening 4s ...");
-    uint32_t deadline = millis() + 4000;
-    char buf[1024];
-    while (millis() < deadline) {
-        int n = udp.parsePacket();
-        if (n <= 0) { delay(20); continue; }
-        IPAddress src = udp.remoteIP();
-        int len = udp.read(buf, sizeof(buf) - 1);
-        if (len <= 0) continue;
-        buf[len] = 0;
-        String resp(buf);
-        // Pruefen ob es ein SoundTouch ist (Server-Header oder Location-Pattern)
-        if (resp.indexOf("Location: http://") < 0) continue;
-        // Bose-Speaker liefern z.B. http://192.168.1.50:8091/XD/BO5EBO5E-...
-        String srcIp = src.toString();
+    // Phase 1 (eigener Stack-Frame): Burst senden + Responder-IPs sammeln.
+    // buf[1024] + WiFiUDP leben NUR in ssdpCollectCandidates_ und sind nach
+    // dessen Return schon wieder freigegeben.
+    std::vector<String> candidates;
+    ssdpCollectCandidates_(candidates);
+    // Phase 2: jeden Kandidaten proben — jetzt OHNE den 1-KB-Empfangspuffer
+    // auf dem Stack, sodass der HTTPClient-Frame in probeIp_ Luft hat.
+    for (const String& srcIp : candidates) {
         Speaker s;
         if (probeIp_(srcIp, s)) {
             Serial.printf("[inv][ssdp] %s -> %s (%s)\n",
@@ -300,7 +327,6 @@ void SpeakerInventory::ssdpMSearch_() {
             mergeSpeaker_(s);
         }
     }
-    udp.stop();
 }
 
 // Probe-Pass ueber alle in NVS hinterlegten Speaker-IPs. Viel schneller +
