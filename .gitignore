@@ -31,6 +31,9 @@ HARDWARE_STATUS.md
 schematics/
 datasheets/
 datasheet/
+# Server-side deployment config (Apache vhost etc.) — gehoert nicht ins
+# public Firmware-Repo; Source of truth liegt im privaten sixback-backend.
+deployment/
 
 # Interne Projekt-Doku (Forschungs-Notes, Sweep-Memos, Adoption-Pläne,
 # Pre-Release-Test-Protokolle) — nicht für Public-Repo. Bleibt lokal als
