@@ -184,6 +184,8 @@ void emitSpeakers(AsyncWebServerRequest* req, JsonDocument& doc) {
         o["status"]      = sixback::migrationStatusToStr(s.status);
         o["cloud_url"]   = s.cloudUrl;
         o["owned_by_us"] = s.ownedByUs;
+        o["sources_ready"] = s.sourcesReady;  // Issue #10: false = migriert aber
+                                              // TUNEIN-Source fehlt -> Re-Sync noetig
         o["group_id"]    = s.groupId;
         // Anzahl belegter Preset-Slots
         int n = 0;
@@ -1031,6 +1033,37 @@ static QueueHandle_t g_pushQueue = nullptr;
 static TaskHandle_t  g_pushTask  = nullptr;
 constexpr UBaseType_t PUSH_QUEUE_DEPTH = 16;  // ≥ 3 Speaker × 6 Slots
 
+// Wartet bis der Speaker den gerade ge-selecteten Sender wirklich abspielt
+// (now_playing: passende source + playStatus=PLAY_STATE), max timeoutMs.
+// Ersetzt das blinde delay(8000) in den Long-Press-Pfaden: auf langsamen
+// Netzen/Resolutions startet der Stream erst nach >8s, und ein Long-Press
+// waehrend BUFFERING/INVALID_SOURCE speichert nichts (Issue #10 "Mode B" —
+// migrierter Speaker, /select=200, aber verify-fail "hardware did not save").
+// Rueckgabe: true = PLAY_STATE erreicht; false = INVALID_SOURCE oder Timeout.
+static bool waitForPlayState_(const String& spIp, const String& expectSource,
+                              uint32_t timeoutMs) {
+    const String srcNeedle = "source=\"" + expectSource + "\"";
+    delay(1500);  // kurze Anlauf-Latenz, damit now_playing vom Vorzustand weg ist
+    uint32_t deadline = millis() + timeoutMs;
+    while (millis() < deadline) {
+        HTTPClient h;
+        h.setReuse(false);
+        bool play = false, invalid = false;
+        if (h.begin("http://" + spIp + ":" + String(BOSE_BMX_PORT) + "/now_playing")) {
+            if (h.GET() == 200) {
+                String np = h.getString();
+                if (np.indexOf("INVALID_SOURCE") >= 0) invalid = true;
+                else if (np.indexOf(srcNeedle) >= 0 && np.indexOf("PLAY_STATE") >= 0) play = true;
+            }
+        }
+        h.end();
+        if (play)    return true;
+        if (invalid) return false;
+        delay(1000);
+    }
+    return false;
+}
+
 static void doPush_(const PushPresetJob_& job) {
     // Defensive /sources-Vorpruefung (Issue #10/#11): der Handler gated bereits
     // auf MigrationStatus, aber der kann veraltet sein (cron-tick alle 30 min)
@@ -1114,10 +1147,17 @@ static void doPush_(const PushPresetJob_& job) {
                       job.spIp.c_str(), job.p.slot, selectCode, hint);
         return;
     }
-    delay(8000);  // Stream stabilisieren — 4 s war in der Praxis oft zu kurz
-                  // (siehe Push-Reliability-Bug 2026-05-22): Bose-FW akzeptiert
-                  // /select 200 bevor /now_playing tatsaechlich umgeschaltet ist,
-                  // dann findet long-press kein "current playing" zum Speichern.
+    // Statt blind 8s: auf echtes PLAY_STATE warten (Fix Issue #10 "Mode B").
+    // Bose-FW quittiert /select 200 bevor now_playing umgeschaltet ist; auf
+    // langsamen Netzen/Resolutions laeuft der Sender erst nach >8s an, und ein
+    // Long-Press waehrend BUFFERING/INVALID_SOURCE speichert nichts -> verify-
+    // fail. waitForPlayState_ pollt bis der ge-selectete Sender PLAY_STATE
+    // meldet (max 18s); sonst abbrechen statt einen Fehl-Long-Press zu machen.
+    if (!waitForPlayState_(job.spIp, sixback::presetSourceToStr(job.p.source), 18000)) {
+        Serial.printf("[bg:push-preset] %s slot %u ABORT — station never reached PLAY_STATE within 18s (slow stream resolve / INVALID_SOURCE) — no long-press, nothing saved\n",
+                      job.spIp.c_str(), job.p.slot);
+        return;
+    }
     // Long-Press PRESET_n
     auto sendKey = [&](const String& state) {
         HTTPClient h;
@@ -1842,9 +1882,13 @@ static void recordDlnaWorker_(void* arg) {
         }
     }
 
-    // Wait for /now_playing to actually switch — mirrors doPush_ rationale.
-    // DLNA stream-start can be slow (server has to seek + open file).
-    delay(8000);
+    // Auf echtes PLAY_STATE warten statt blind 8s — mirrors doPush_ rationale;
+    // DLNA stream-start can be slow (server has to seek + open file). Bei Timeout
+    // konservativ trotzdem fortfahren (kein Regress des bestehenden Verhaltens).
+    if (!waitForPlayState_(job->spIp, "STORED_MUSIC", 18000)) {
+        Serial.printf("[bg:dlna-record] %s slot %u — no PLAY_STATE within 18s, long-press anyway\n",
+                      job->spIp.c_str(), job->slot);
+    }
 
     auto sendKey = [&](const String& state) {
         HTTPClient h;

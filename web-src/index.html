@@ -66,6 +66,8 @@
   .pill.unknown        { background: #e6e3da; color: var(--mute); }
   .pill.stale          { background: #f9e8b6; color: #7a5400; }
   .pill.settling       { background: #f9e8b6; color: #7a5400; font-style: italic; }
+  .pill.warn           { background: #fde0b2; color: #8a4b00; font-weight: 600; }
+  .actions button.needs-resync { background:#fde0b2; color:#8a4b00; font-weight:600; border-color:#e0a85c; }
 
   /* Issue #7: collapsible speaker cards + at-a-glance status header */
   .speaker-head-main { flex: 1 1 auto; min-width: 0; }
@@ -1371,7 +1373,13 @@ function classify(s, myBase) {
 
 function pillForStatus(s, myBase) {
   const [cls, label] = classify(s, myBase);
-  return `<span class="pill ${cls}">${label}</span>`;
+  let html = `<span class="pill ${cls}">${label}</span>`;
+  // Issue #10: migriert, aber SixBack-Sources nicht angewendet (kein READY
+  // TuneIn) -> Push schlaegt fehl (/select=500). Warnen + auf Re-Sync zeigen.
+  if (s.owned_by_us && s.sources_ready === false) {
+    html += ` <span class="pill warn" title="This speaker is migrated to SixBack, but its source list is missing the SixBack sources (no READY TuneIn). Pushing presets will fail (/select=500). Click '↻ Re-Sync Sources' on this card to re-register them.">⚠ sources not synced</span>`;
+  }
+  return html;
 }
 
 // ---- Issue #7: collapsible speaker cards + at-a-glance status dots --------
@@ -1557,7 +1565,7 @@ function updateSpeakerCard(card, s, myBase) {
 
 function actionButtonsHtml(s) {
   const migrate = s.owned_by_us
-    ? ''
+    ? `<button class="${s.sources_ready === false ? 'needs-resync' : ''}" title="Re-sync this speaker's source list from SixBack — re-runs the migration (re-sets the cloud URLs + reboots) so the speaker re-pulls its account/sources. Use this if a station won't play or presets won't save on a speaker that already shows 'migrated (ours)'." onclick="actSpeaker('${s.device_id}','migrate')">↻ Re-Sync Sources</button>`
     : `<button class="primary" onclick="actSpeaker('${s.device_id}','migrate')">→ Migrate</button>`;
   const power = `<button class="pwr" id="pwr-${s.device_id}" title="Toggle speaker power" onclick="togglePower('${s.device_id}')">Power</button>`;
   const vol = `<button class="vol" title="Volume down (1 step)" onclick="sendKey('${s.device_id}','VOLUME_DOWN')">Vol −</button>`

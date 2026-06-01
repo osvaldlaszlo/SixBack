@@ -508,6 +508,59 @@ MigrationStatus SpeakerInventory::detectStatus(const String& ip, const String& m
     return MigrationStatus::UNKNOWN;
 }
 
+// Prueft ob ein zu UNS migrierter Speaker den SixBack-TUNEIN-Source als READY
+// in /sources hat. Fehlt der (migriert, aber account/full nie angewendet —
+// Issue #10: Speaker zeigt "migrated", aber /select TUNEIN -> 500 weil keine
+// TUNEIN-Source registriert ist), liefert false -> UI warnt + bietet Re-Sync.
+// Konservativ: unerreichbar / nicht-200 -> true (nicht faelschlich warnen).
+static bool probeTuneinReady_(const String& ip) {
+    HTTPClient http;
+    http.setReuse(false);
+    if (!http.begin("http://" + ip + ":" + String(BOSE_BMX_PORT) + "/sources")) return true;
+    int code = http.GET();
+    if (code != 200) { http.end(); return true; }
+    String body = http.getString();
+    http.end();
+    int pos = body.indexOf("source=\"TUNEIN\"");
+    while (pos >= 0) {
+        int tagEnd = body.indexOf('>', pos);
+        if (tagEnd > pos &&
+            body.substring(pos, tagEnd).indexOf("status=\"READY\"") >= 0) return true;
+        pos = body.indexOf("source=\"TUNEIN\"", pos + 15);
+    }
+    return false;  // kein READY-TUNEIN -> Re-Sync noetig
+}
+
+// Synthetischer, deterministischer accountId aus der SCM-MAC (deviceId), fuer
+// Speaker die (mehr) keinen margeAccountUUID haben. Numerisch (account-aehnlich),
+// pro-Speaker eindeutig, kollisionsfrei. Ohne accountId ist ein Speaker nicht
+// marge-"eligible" -> kein /setMargeAccount -> keine Source-Registrierung
+// (Issue #10: JeyP91 ST20 hatte margeAccountUUID="" -> "no eligible speakers").
+static String syntheticAccountId_(const String& deviceId) {
+    uint64_t v = strtoull(deviceId.c_str(), nullptr, 16);
+    if (v == 0) return String("sb") + deviceId;  // Fallback falls nicht-hex
+    char buf[24];
+    snprintf(buf, sizeof(buf), "%llu", (unsigned long long)v);
+    return String(buf);
+}
+
+// Bindet den Speaker per /setMargeAccount an den (SixBack-)accountId — identisch
+// zur marge-keepalive. Danach pullt der Speaker /streaming/account/<id>/full und
+// registriert die SixBack-Sources (TUNEIN/RB/LIR/STORED_MUSIC). true = HTTP 200.
+static bool margeSetAccount_(const String& ip, const String& accountId) {
+    if (ip.length() == 0 || accountId.length() == 0) return false;
+    HTTPClient http;
+    http.setReuse(false);
+    if (!http.begin("http://" + ip + ":" + String(BOSE_BMX_PORT) + "/setMargeAccount")) return false;
+    http.addHeader("Content-Type", "application/xml");
+    String body = "<PairDeviceWithAccount><accountId>";
+    body += accountId;
+    body += "</accountId><userAuthToken>Bearer sixback-keepalive</userAuthToken></PairDeviceWithAccount>";
+    int code = http.POST(body);
+    http.end();
+    return code == 200;
+}
+
 void SpeakerInventory::refreshMigrationStatus() {
     // Snapshot unter Lock, dann Telnet-Calls OHNE Lock — sonst blockt jeder
     // Reader (AsyncTCP-Handler, Bose-Cloud-Mock) fuer 3-5 s pro Speaker.
@@ -517,6 +570,36 @@ void SpeakerInventory::refreshMigrationStatus() {
     String myBase = "http://" + WiFi.localIP().toString() + ":" + String(BOSE_HTTP_PORT);
     for (auto& s : work) {
         s.status = detectStatus(s.ip, myBase, &s.cloudUrl);
+        // Source-Health (Issue #10): nur fuer zu-UNS-migrierte Speaker pruefen,
+        // ob TUNEIN als READY-Source registriert ist. Sonst (nicht-migriert /
+        // peer / offline) irrelevant -> als gesund markieren.
+        // NUR wenn WIR der Migrationspartner sind (Dirk 2026-06-01): ownedByUs
+        // (wir haben ihn migriert) UND er zeigt aktuell auf unsere Base-URL.
+        // Verhindert dass wir je einen Peer-migrierten Speaker anfassen
+        // (/setMargeAccount waere "klauen"). cloudUrl==myBase allein reicht
+        // nicht — bei Auto-Claim-Edge-Cases erst ab naechstem Refresh owned.
+        const bool oursMigrated =
+            (s.ownedByUs && s.status == MigrationStatus::MIGRATED && s.cloudUrl == myBase);
+        s.sourcesReady = oursMigrated ? probeTuneinReady_(s.ip) : true;
+        // AUTO-HEAL (Issue #10): ours+migrated, aber TUNEIN-Source fehlt ->
+        // accountId sicherstellen (synthetisch aus deviceId wenn der Speaker
+        // keinen margeAccountUUID hat) + /setMargeAccount pushen. Der Speaker
+        // bindet dann an den Account, pullt account/full und registriert die
+        // SixBack-Sources. Laeuft bei jedem Status-Refresh/Cron-Tick ->
+        // SELBSTHEILEND ohne dass der User je die WebUI sehen muss. Idempotent;
+        // sobald die Sources READY sind, greift die Bedingung nicht mehr.
+        if (oursMigrated && !s.sourcesReady) {
+            if (s.accountId.length() == 0) {
+                s.accountId = syntheticAccountId_(s.deviceId);
+                Serial.printf("[inv] auto-heal: assign synthetic accountId %s to %s "
+                              "(empty margeAccountUUID -> was not marge-eligible)\n",
+                              s.accountId.c_str(), s.name.c_str());
+            }
+            bool ok = margeSetAccount_(s.ip, s.accountId);
+            Serial.printf("[inv] auto-heal: /setMargeAccount %s acct=%s -> %d "
+                          "(sources re-register on next account/full pull)\n",
+                          s.ip.c_str(), s.accountId.c_str(), (int)ok);
+        }
     }
     // Stale-view-fix (2026-05-26): die auto-release-Pruefung (s.u.) skipt
     // bei cloudUrl=="" — genau das ist aber der State waehrend ein Speaker
@@ -559,8 +642,13 @@ void SpeakerInventory::refreshMigrationStatus() {
             if (s.deviceId == upd.deviceId) { live = &s; break; }
         }
         if (!live) continue;
-        live->status   = upd.status;
-        live->cloudUrl = upd.cloudUrl;
+        live->status       = upd.status;
+        live->cloudUrl     = upd.cloudUrl;
+        live->sourcesReady = upd.sourcesReady;
+        // Auto-heal (Issue #10): einen frisch zugewiesenen synthetischen
+        // accountId uebernehmen (macht den Speaker marge-eligible).
+        if (upd.accountId.length() && live->accountId != upd.accountId)
+            live->accountId = upd.accountId;
         // Auto-Claim: zeigt eh schon auf UNS, aber ownedByUs noch False
         // (Edge-Case nach Flash-Erase/NVS-Reset) — uebernehmen wir.
         if (!live->ownedByUs && live->cloudUrl == myBase) {

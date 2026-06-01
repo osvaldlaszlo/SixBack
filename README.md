@@ -17,7 +17,7 @@ No subscription, no account, no Bose servers.  One USB stick on your LAN.
 > functionality is preserved; the rename reflects the project's identity
 > independent of any Bose trademark.
 
-## Status (v0.8.7)
+## Status (v0.8.8)
 
 | Component                                                            | State                                                                                                              |
 | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
@@ -28,7 +28,9 @@ No subscription, no account, no Bose servers.  One USB stick on your LAN.
 | **Marge pair-bootstrap** (`/setMargeAccount` round-trip)             | working — `/streaming/account/{a}/device/` echoes deviceid with Bearer-credentials                                 |
 | **scmudc telemetry** — per-device NowPlaying + event trace           | working — body-captured `/v1/scmudc/{deviceId}` JSON parsed into per-speaker store                                 |
 | TuneIn preset resolver (`Tune.ashx` + `Describe.ashx`)               | working — stations show with correct name & artwork                                                                |
-| Preset push to speaker — serialized FreeRTOS queue (v0.6.0)          | working — single persistent worker drains pushes one-by-one; depth 16, 503 when full; refuses with an actionable HTTP 409 ("migrate this speaker first") when the speaker isn't migrated yet, instead of a confusing "didn't save" (v0.8.7) |
+| Preset push to speaker — serialized FreeRTOS queue (v0.6.0)          | working — single persistent worker drains pushes one-by-one; depth 16, 503 when full; refuses with an actionable HTTP 409 ("migrate this speaker first") when the speaker isn't migrated yet, instead of a confusing "didn't save" (v0.8.7); waits for the speaker to actually reach *playing* state before the long-press (up to ~18 s) so a slow stream-start no longer drops the preset (v0.8.8) |
+| **Source self-healing** (v0.8.8)                                     | working — a migrated speaker whose SixBack account never bound (empty `margeAccountUUID` → no TuneIn/Spotify/DLNA sources registered, so every push failed with `/select=500`) is detected on the periodic status check and **auto-re-bound** (synthetic per-device account id + `/setMargeAccount`), re-registering its sources with no user action; a `⚠ sources not synced` badge + a **Re-Sync Sources** button surface it in the WebUI too (#10) |
+| **Captive portal** — WiFi setup AP                                   | working — fixed the `ERR_TOO_MANY_REDIRECTS` redirect loop that broke the setup page (the root route was a regex pattern handed to a non-regex router); the portal now loads cleanly (v0.8.8, #12) |
 | **Preset-loss defense** (Defense-in-Depth)                           | working — `handleMigrate` pre-imports; `/presets` and `account/full` return 404 when store empty; TUNEIN source-block carries `username=TuneIn` so `sourceAccount` survives every sync |
 | **Opaque-source passthrough** — DLNA / UPnP / Bluetooth presets      | working — original `<ContentItem>` captured at import and replayed 1:1; `STORED_MUSIC` and `STORED_MUSIC_MEDIA_RENDERER` declared in `accountSources`; serialized as Bosman-schema `<preset>` blocks with `<location>` + `<source>` reference (v0.6.537) |
 | **DLNA preset workflow** end-to-end                                  | working — verified on SoundTouch 30 with 6/6 OPAQUE slots reboot-persistent (2026-05-21)                           |
@@ -118,7 +120,7 @@ looks like another SixBack instance the speaker is left to its current
 owner.  The UI labels such speakers as *claimed by peer @ &lt;ip&gt;*.
 
 <p align="center">
-  <img src="images/WebUI.png" alt="SixBack Web UI — speaker cards with auto-migrate switch" width="720">
+  <img src="images/WebUIRadioSelector.png" alt="SixBack Web UI — radio/media selector with speaker preset slots" width="720">
 </p>
 
 The top of `http://sixback.local/` is where the **Auto-Migrate at Boot**

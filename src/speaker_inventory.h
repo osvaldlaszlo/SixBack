@@ -43,6 +43,13 @@ struct Speaker {
                             // konfiguriert -> ip_failsafe re-migriert ihn bei
                             // jedem ESP-IP-Wechsel. FALSE = noch nie hier,
                             // oder vom User reverted.
+    bool sourcesReady = true; // Nur fuer zu-UNS-migrierte Speaker aussagekraeftig:
+                            // TRUE = der SixBack-account/full-Source-Block ist am
+                            // Speaker registriert (TUNEIN als READY in /sources).
+                            // FALSE = migriert, aber Sources nie angewendet
+                            // (Issue #10: push -> /select=500). Wird bei jedem
+                            // refreshMigrationStatus neu ermittelt; UI warnt +
+                            // bietet Re-Sync. Runtime-derived, nicht in NVS.
     uint32_t lastSeenMs;
     String groupId;         // freitext, default ""
 

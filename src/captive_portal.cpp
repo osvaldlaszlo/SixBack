@@ -235,7 +235,12 @@ void captiveStart() {
     dnsServer.start(DNS_PORT, "*", AP_IP);
 
     captiveServer = new AsyncWebServer(CAPTIVE_PORT);
-    captiveServer->on("^/$",                       HTTP_GET,  handleRoot);
+    // Literaler Pfad "/" — captiveServer->on() ist KEIN Regex-Router (Regex
+    // macht routeT in web_router.h). Ein Pattern wie "^/$" wird hier LITERAL
+    // genommen -> ein echter "/"-Request matcht nie -> faellt auf onNotFound ->
+    // handleCaptiveRedirect redirected "/" wieder auf "/" -> Endlosschleife
+    // (ERR_TOO_MANY_REDIRECTS, Issue #12). Daher literaler Pfad.
+    captiveServer->on("/",                         HTTP_GET,  handleRoot);
     captiveServer->on("/scan",                     HTTP_GET,  handleScan);
     captiveServer->on("/save",                     HTTP_POST, handleSave);
     captiveServer->on("/save_status",              HTTP_GET,  handleSaveStatus);
