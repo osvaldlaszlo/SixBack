@@ -28,6 +28,9 @@ struct TuneInResolution {
 
 TuneInResolution resolveTuneInStruct(const String& stationId);
 
+// Loescht den kompletten Resolve-Cache (NVS-Namespace sixback-tune).
+void clearTuneInCache();
+
 } // namespace sixback
 
 // Legacy/compat — Phase-0-API.

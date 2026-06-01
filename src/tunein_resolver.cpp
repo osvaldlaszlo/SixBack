@@ -61,21 +61,40 @@ bool fetchFromOpml(const String& id, String& url, String& name, String& image) {
     http.setConnectTimeout(3000);
     http.setTimeout(5000);
 
-    // 1) Stream-URL via Tune.ashx
-    String tuneUrl = "http://opml.radiotime.com/Tune.ashx?id=" + id + "&render=json";
-    if (!http.begin(tuneUrl)) return false;
-    int code = http.GET();
-    if (code != 200) { http.end(); return false; }
-    String body = http.getString();
-    http.end();
-    JsonDocument doc;
-    if (deserializeJson(doc, body) != DeserializationError::Ok) return false;
-    JsonArray arr = doc["body"].as<JsonArray>();
-    for (JsonObject o : arr) {
-        if (String((const char*)(o["element"] | "")) != "audio") continue;
-        url = (const char*)(o["url"] | "");
-        if (url.length() > 0) break;
-    }
+    // 1) Stream-URL via Tune.ashx.
+    //    WICHTIG: OHNE explizites `formats=` liefert TuneIns OPML-API fuer
+    //    AAC-only-Stationen KEINEN Stream, sondern den Platzhalter
+    //    `cdn-cms.tunein.com/service/Audio/notcompatible.enUS.mp3` — der
+    //    Speaker spielt dann ~12s "this station is not compatible" und faellt
+    //    auf INVALID_SOURCE. Der Bose-SoundTouch dekodiert AAC-LC aber sehr
+    //    wohl (verifiziert via DLNA auf Emma, 2026-06-02). Loesung: explizit
+    //    `formats=mp3` bevorzugen (haelt das bisherige Verhalten fuer
+    //    Dual-Format-Sender + waehlt den kompatibelsten Codec), und nur wenn
+    //    der Sender kein MP3 hat auf `formats=aac` zurueckfallen.
+    //    Kein `hls`/`ogg`/`wma`: die 2021er-FW hat dafuer keinen Decoder.
+    auto fetchStreamUrl = [&](const char* formats) -> String {
+        String tuneUrl = "http://opml.radiotime.com/Tune.ashx?id=" + id +
+                         "&render=json&formats=" + formats;
+        if (!http.begin(tuneUrl)) return String();
+        int code = http.GET();
+        if (code != 200) { http.end(); return String(); }
+        String body = http.getString();
+        http.end();
+        JsonDocument doc;
+        if (deserializeJson(doc, body) != DeserializationError::Ok) return String();
+        for (JsonObject o : doc["body"].as<JsonArray>()) {
+            if (String((const char*)(o["element"] | "")) != "audio") continue;
+            String u = (const char*)(o["url"] | "");
+            if (u.length() == 0) continue;
+            if (u.indexOf("notcompatible") >= 0) continue;  // TuneIn-Platzhalter -> naechstes Format
+            if (u.indexOf(".m3u8") >= 0) continue;           // HLS: kein Client in Bose-FW
+            return u;                                        // TuneIn ordnet best-first
+        }
+        return String();
+    };
+
+    url = fetchStreamUrl("mp3");
+    if (url.length() == 0) url = fetchStreamUrl("aac");
     if (url.length() == 0) return false;
 
     // 2) Stations-Metadata via Describe.ashx — liefert name, slogan, logo
@@ -103,6 +122,14 @@ bool fetchFromOpml(const String& id, String& url, String& name, String& image) {
 }
 
 } // anon
+
+// Loescht den gesamten TuneIn-Resolve-Cache (NVS-Namespace sixback-tune).
+// Noetig nach einem Resolver-Verhaltenswechsel (z.B. dem formats=-Fix):
+// Stations, die VORHER als notcompatible-Platzhalter aufgeloest + gecached
+// wurden, sind sonst dauerhaft stale. Aufgerufen von POST /api/tunein/cache/clear.
+void clearTuneInCache() {
+    nvsEraseAllInNamespace(NVS_NS);
+}
 
 String buildBoseJson(const String& id, const String& name, const String& url,
                      const String& image, const String& source) {

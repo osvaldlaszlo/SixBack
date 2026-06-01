@@ -2422,6 +2422,14 @@ void handleTuneInResolve(AsyncWebServerRequest* req) {
     req->send(200, "application/json", b);
 }
 
+// POST /api/tunein/cache/clear — verwirft den NVS-Resolve-Cache (sixback-tune)
+// komplett. Noetig nach einem Resolver-Verhaltenswechsel, damit Stations, die
+// vorher als notcompatible-Platzhalter gecached wurden, neu aufgeloest werden.
+void handleTuneInCacheClear(AsyncWebServerRequest* req) {
+    sixback::clearTuneInCache();
+    req->send(200, "application/json", "{\"ok\":true,\"cleared\":\"sixback-tune\"}");
+}
+
 // GET /api/tunein/search?q=...
 //   Proxy zu http://opml.radiotime.com/Search.ashx?query=<q>&render=json
 void handleTuneInSearch(AsyncWebServerRequest* req) {
@@ -3411,6 +3419,7 @@ void registerApiEndpoints(AsyncWebServer& ui) {
     routeJsonBody(ui, "/api/group/sync",              HTTP_POST, handleSyncGroup);
 
     routeT(ui, "^/api/tunein/resolve/([^/]+)$", HTTP_GET, handleTuneInResolve);
+    routeT(ui, "^/api/tunein/cache/clear$",     HTTP_POST, handleTuneInCacheClear);
     ui.on("/api/tunein/search",            HTTP_GET, handleTuneInSearch);
 
     ui.on("/api/auto-mode",          HTTP_GET,  handleGetAutoMode);
