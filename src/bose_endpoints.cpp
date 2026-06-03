@@ -15,6 +15,7 @@
 #include "config.h"
 #include <Arduino.h>
 #include <ArduinoJson.h>
+#include <mbedtls/base64.h>
 #include <HTTPClient.h>
 #include <LittleFS.h>
 #include <set>
@@ -850,11 +851,44 @@ void handleBlacklist(AsyncWebServerRequest* req) {
 // -----------------------------------------------------------------------------
 
 // GET /core02/svc-bmx-adapter-orion/prod/orion/station?data=<b64>
-//   Fallback-Custom-Stream-Adapter — Speaker landet hier wenn TUNEIN-Adapter
-//   fehlt. Minimal-JSON, kein realer Stream. Speaker faellt auf STANDBY zurueck.
+//   BMX-ORION-Adapter ("Custom Stations" = bmx_service hinter
+//   LOCAL_INTERNET_RADIO, provider 11). Loest LIR/ORION-Presets auf: die
+//   ContentItem-location ist /station?data=<base64-json {streamUrl,name,
+//   imageUrl[,isRealtime,streamType]}>; wir spiegeln das im Bose-BMX-Envelope
+//   zurueck (Form wie der Upstream-svc-bmx-adapter-orion). Damit spielt der
+//   Speaker den Stream nativ — kein TUNEIN-Tunnel noetig. (Empirisch belegt
+//   2026-06-03 auf Emma: ohne dieses Envelope (alter Leer-Stub ohne "audio"-
+//   Wrapper) blieb LIR auf STANDBY = der vermeintliche "LIR-Play-Fail".)
 void handleOrionStation(AsyncWebServerRequest* req) {
-    req->send(200, "application/json",
-              "{\"streamUrl\":\"\",\"imageUrl\":\"\",\"name\":\"\"}");
+    String streamUrl, name, imageUrl, streamType = "liveRadio";
+    bool isRealtime = true;
+    String dataParam = req->hasParam("data") ? req->getParam("data")->value() : "";
+    if (dataParam.length() > 0) {
+        dataParam.replace('-', '+'); dataParam.replace('_', '/');   // url-safe -> std
+        size_t outLen = 0;
+        std::vector<unsigned char> buf(((dataParam.length() / 4) + 1) * 3 + 8);
+        if (mbedtls_base64_decode(buf.data(), buf.size(), &outLen,
+                (const unsigned char*)dataParam.c_str(), dataParam.length()) == 0 && outLen) {
+            JsonDocument d;
+            if (!deserializeJson(d, buf.data(), outLen)) {
+                streamUrl = (const char*)(d["streamUrl"] | "");
+                name      = (const char*)(d["name"]      | "");
+                imageUrl  = (const char*)(d["imageUrl"]  | "");
+                if (d["streamType"].is<const char*>()) streamType = (const char*)d["streamType"];
+                if (d["isRealtime"].is<bool>())        isRealtime = d["isRealtime"].as<bool>();
+            }
+        }
+    }
+    JsonDocument out;
+    JsonObject a = out["audio"].to<JsonObject>();
+    a["isRealtime"]  = isRealtime;
+    a["hasPlaylist"] = false;
+    a["streamUrl"]   = streamUrl;       // leer falls data fehlt/ungueltig -> Speaker STANDBY
+    out["imageUrl"]  = imageUrl;
+    out["name"]      = name;
+    out["streamType"] = streamType;
+    String body; serializeJson(out, body);
+    req->send(200, "application/json", body);
 }
 
 // GET /streaming/software/update/account/{aid}
