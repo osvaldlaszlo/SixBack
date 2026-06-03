@@ -162,7 +162,7 @@ cat > "$OUT/manifest.json" <<EOF
 {
   "name": "SixBack",
   "version": "$VERSION",
-  "funding_url": "https://polyformproject.org/licenses/noncommercial/1.0.0/",
+  "funding_url": "https://paypal.me/busware",
   "new_install_prompt_erase": true,
   "builds": [
     {
@@ -206,7 +206,7 @@ cat > "$OUT/manifest-update.json" <<EOF
 {
   "name": "SixBack (update)",
   "version": "$VERSION",
-  "funding_url": "https://polyformproject.org/licenses/noncommercial/1.0.0/",
+  "funding_url": "https://paypal.me/busware",
   "new_install_prompt_erase": false,
   "builds": [
     {

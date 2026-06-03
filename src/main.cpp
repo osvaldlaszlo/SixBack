@@ -31,6 +31,7 @@
 #include "system_health.h"
 #include "auto_mode.h"
 #include "nvs_helper.h"
+#include "tunein_resolver.h"
 #include "marge_keepalive.h"
 #include "mbedtls_psram_alloc.h"
 
@@ -123,6 +124,12 @@ void setup() {
     // loadFromNVS()/connectWifi(). Idempotent + no-op nach erstem
     // erfolgreichen Boot. Siehe nvs_helper.{h,cpp}.
     sixback::migrateAllBosefixNvs();
+
+    // On a firmware version change, flush the TuneIn resolve cache once so a
+    // resolver behaviour change (e.g. the formats= AAC fix) doesn't leave a
+    // station stuck on a stale 'notcompatible' resolution after an OTA — no
+    // manual /api/tunein/cache/clear needed. Idempotent (version-stamped).
+    sixback::autoClearTuneInCacheOnVersionChange(FW_VERSION_STRING);
 
     // Compile all HTTP route handlers NOW, while the heap is still fresh.
     // With ASYNCWEBSERVER_REGEX every "^…$" route builds a std::regex; on

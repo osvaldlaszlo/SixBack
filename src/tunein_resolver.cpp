@@ -131,6 +131,25 @@ void clearTuneInCache() {
     nvsEraseAllInNamespace(NVS_NS);
 }
 
+// Beim Firmware-Versionssprung den Resolve-Cache EINMAL leeren. Verhindert,
+// dass ein Resolver-Verhaltenswechsel (z.B. der formats=-AAC-Fix) Stations
+// dauerhaft auf einer stale notcompatible-Aufloesung haengen laesst — der
+// Nutzer muss nach einem OTA nichts manuell triggern. Idempotent: feuert nur,
+// wenn FW_VERSION_STRING vom zuletzt gestempelten Wert abweicht. Der Marker
+// liegt im selben Namespace unter "__fwver" (kollidiert nicht mit Station-IDs
+// sXXXX und wird nie als Station nachgeschlagen); clearTuneInCache() loescht
+// ihn mit, daher danach neu stempeln.
+void autoClearTuneInCacheOnVersionChange(const char* fwVersion) {
+    JsonDocument d;
+    String last;
+    if (nvsLoadJson(NVS_NS, "__fwver", d)) last = (const char*)(d["v"] | "");
+    if (last == fwVersion) return;            // gleiche Version -> nichts tun
+    clearTuneInCache();                        // erased NVS_NS (inkl. altem __fwver)
+    JsonDocument w; w["v"] = fwVersion;
+    nvsSaveJson(NVS_NS, "__fwver", w);         // aktuelle Version neu stempeln
+    Serial.printf("[tunein] resolve-cache cleared on version change -> %s\n", fwVersion);
+}
+
 String buildBoseJson(const String& id, const String& name, const String& url,
                      const String& image, const String& source) {
     JsonDocument doc;

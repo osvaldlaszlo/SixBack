@@ -31,6 +31,10 @@ TuneInResolution resolveTuneInStruct(const String& stationId);
 // Loescht den kompletten Resolve-Cache (NVS-Namespace sixback-tune).
 void clearTuneInCache();
 
+// Leert den Resolve-Cache EINMAL pro Firmware-Versionssprung (idempotent).
+// Beim Boot aufrufen mit FW_VERSION_STRING.
+void autoClearTuneInCacheOnVersionChange(const char* fwVersion);
+
 } // namespace sixback
 
 // Legacy/compat — Phase-0-API.
