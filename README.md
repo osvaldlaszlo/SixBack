@@ -152,9 +152,9 @@ page auto-redirects to the device's freshly assigned LAN IP via
 
 ## Supported hardware
 
-| Chip          | Board reference                  | Flash | Notes                                                            |
-| ------------- | -------------------------------- | ----- | ---------------------------------------------------------------- |
-| **ESP32-S3 ★**| `esp32-s3-devkitc-1` (N16R8V)    | 16 MB | **recommended** — 8 MB PSRAM, mature WiFi 5 stack, comfortable flash headroom |
+| Chip          | Board reference                  | Flash  | Notes                                                            |
+| ------------- | -------------------------------- | ------ | ---------------------------------------------------------------- |
+| **ESP32-S3 ★**| `esp32-s3-devkitc-1` **with PSRAM** (any "R8" variant, e.g. N16R8 / N8R8) | ≥ 8 MB | **recommended** — **PSRAM is required** (TLS/HTTPS path for Spotify + OTA). The exact SKU is not important; clones are fine. 16 MB is the tested config; 8 MB+PSRAM works too but needs a custom partition table (the shipped one is laid out for 16 MB — open an issue if you want an 8 MB build) |
 | ESP32         | `esp32dev` (DevKitC-1)           | 4 MB  | classic — **shipped again** (v0.8.x); `scripts/fs_exclude_esp32.py` trims the Spotify-only `silence.mp3` from its LittleFS image so the gzipped Web UI fits the 256 KB spiffs slot |
 | ESP32-C3      | `esp32-c3-devkitm-1`             | 4 MB  | flashes over the chip's built-in USB-Serial-JTAG                 |
 | ESP32-C6      | `esp32-c6-devkitc-1`             | 4 MB  | WiFi 6 — works, but cold-start discovery occasionally drops SSDP-multicast packets and rare HTTP-server hangs need a reset |
@@ -164,8 +164,11 @@ end-to-end test (S3 ↔ C6 ping-pong with full erase/flash/provision each
 round) the S3 hit 3/3 speakers discovered + migrated in every single
 auto-mode run, while the C6 needed a second boot in one cold-start case
 and produced one HTTP-server hang that recovered only after a hardware
-reset.  The extra ~5 € for an S3-DevKitC-1-N16R8 buys noticeable
-robustness and ~40 % free flash for future features.
+reset.  The extra ~5 € for an S3-DevKitC-1 (with PSRAM) buys noticeable
+robustness and plenty of free flash for future features.  Any S3 board
+**with PSRAM** works — the specific flash size is not critical (the app is
+~1.6 MB and the web UI ~160 KB), but a board *without* PSRAM will struggle
+on the TLS/HTTPS path and is not supported.
 
 C3, C6 and ESP32-classic are fully functional and stay built/published on
 every release.  ESP32-classic is published again: `scripts/fs_exclude_esp32.py`

@@ -6,6 +6,7 @@
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
 #include <WiFi.h>
+#include <vector>
 
 namespace sixback {
 
@@ -54,6 +55,26 @@ void saveCache(const String& id, const String& url, const String& name, const St
     nvsSaveJson(NVS_NS, id.c_str(), doc);
 }
 
+// Prueft, ob eine Stream-URL erreichbar ist. GET, nur den Response-Code lesen,
+// Body NICHT konsumieren (ein Icecast-200 wuerde sonst endlos streamen).
+//   2xx          -> ok (direkter Stream)
+//   3xx (301/302/307/308) -> ok: der Speaker folgt dem Redirect selbst
+//                            (z.B. stream.srg-ssr.ch: 2x 302 -> audio/mpeg).
+//                            Wir loesen ihn NICHT auf (kein setFollowRedirects)
+//                            und reichen die Original-URL weiter.
+//   4xx/5xx/Connect-Fehler -> tot.
+// Noetig, weil TuneIn fuer manche Sender tote Varianten ZUERST listet (s.u.).
+bool isStreamReachable(const String& url) {
+    HTTPClient probe;
+    probe.setReuse(false);
+    probe.setConnectTimeout(3000);
+    probe.setTimeout(3000);
+    if (!probe.begin(url)) return false;
+    int code = probe.GET();   // kehrt nach den Headern zurueck
+    probe.end();              // schliesst sofort, Body bleibt ungelesen
+    return code >= 200 && code < 400;
+}
+
 bool fetchFromOpml(const String& id, String& url, String& name, String& image) {
     if (WiFi.status() != WL_CONNECTED) return false;
     HTTPClient http;
@@ -82,15 +103,34 @@ bool fetchFromOpml(const String& id, String& url, String& name, String& image) {
         http.end();
         JsonDocument doc;
         if (deserializeJson(doc, body) != DeserializationError::Ok) return String();
+        // Alle brauchbaren Kandidaten einsammeln (notcompatible/HLS raus).
+        std::vector<String> cand;
         for (JsonObject o : doc["body"].as<JsonArray>()) {
             if (String((const char*)(o["element"] | "")) != "audio") continue;
             String u = (const char*)(o["url"] | "");
             if (u.length() == 0) continue;
-            if (u.indexOf("notcompatible") >= 0) continue;  // TuneIn-Platzhalter -> naechstes Format
+            if (u.indexOf("notcompatible") >= 0) continue;  // TuneIn-Platzhalter
             if (u.indexOf(".m3u8") >= 0) continue;           // HLS: kein Client in Bose-FW
-            return u;                                        // TuneIn ordnet best-first
+            cand.push_back(u);
+            if (cand.size() >= 6) break;                      // Hot-Path: Liste begrenzen
         }
-        return String();
+        if (cand.empty()) return String();
+        // TuneIns Reihenfolge ist NICHT verlaesslich "best-first": fuer manche
+        // Sender stehen tote Varianten (404) trotz reliability=100 vorn
+        // (s17871/Dvojka: _mp3_32 + _mp3_64 = 404, erst _mp3_128 lebt). Das
+        // blinde Nehmen des ersten Elements liefert dann eine tote URL, und der
+        // Speaker faellt nach ~10s Buffering auf INVALID_SOURCE. Daher den
+        // ersten ERREICHBAREN Kandidaten waehlen (2xx/3xx; siehe isStreamReachable).
+        for (const String& u : cand) {
+            if (isStreamReachable(u)) return u;
+        }
+        // Keiner hat die Probe bestanden (z.B. transienter Probe-Fehler) ->
+        // alte Heuristik "erster Kandidat", damit der Fix nie schlechter ist
+        // als vorher (nicht-regressiv).
+        Serial.printf("[tunein] %s/%s: no candidate passed reachability probe, "
+                      "falling back to first (%s)\n",
+                      id.c_str(), formats, cand[0].c_str());
+        return cand[0];
     };
 
     url = fetchStreamUrl("mp3");
