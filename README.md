@@ -17,7 +17,7 @@ No subscription, no account, no Bose servers.  One USB stick on your LAN.
 > functionality is preserved; the rename reflects the project's identity
 > independent of any Bose trademark.
 
-## Status (v0.8.15)
+## Status (v0.8.16)
 
 | Component                                                            | State                                                                                                              |
 | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
@@ -42,6 +42,7 @@ No subscription, no account, no Bose servers.  One USB stick on your LAN.
 | **Migrate verify post-boot** (v0.7.632)                              | working — second `getpdo` after `waitForSpeakerBack_`; mismatch → `MIGRATE_FAILED` instead of silent `MIGRATED`    |
 | Auto-import existing presets via BMX `/presets`                      | working                                                                                                            |
 | **Stereo-Pair / Multi-Room group API**                               | working — POST/PUT/DELETE on `/streaming/account/{a}/group/`, NVS-persistent                                       |
+| **Stereo pair — ST10 left/right pairing in the WebUI** (v0.8.16)    | working — SoundTouch 10 cards get a stereo-pair row: pick the right-channel speaker and the two ST10 join into one left/right stereo image that presents as a single device (`POST /addGroup` to the master, device-direct — the speaker itself registers the pair with the SixBack cloud store, so it survives ESP reboots). Un-pair works from either card (`/removeGroup` is routed to the master). ST10-only per the protocol (`supportedURLs` is *not* a reliable gate — an ST30 advertises `/addGroup` too — so the UI gates by model). Stale pair entries left behind by the Bose app's own un-pair path are now pruned when a new pair is registered (#22) |
 | **Device-direct multiroom** (ZoneManager, v0.8.7)                    | working — group speakers straight through the speaker's own `/setZone` / `/getZone` on port 8090 (master + slaves); stateless, live truth read from the master's `/getZone` — a separate layer from the cloud group-store above; WebUI group-picker / badge / ungroup |
 | **Auto-Mode** — discover + migrate + preserve presets on first boot  | working — gated by NVS flag, default on                                                                            |
 | **Auto-Mode cron** — periodic re-check every 30 min when enabled     | working — light discovery + auto-claim/release + migrate newcomers; since v0.8.13 a speaker is only *released* to a **verified** foreign owner (a live SixBack peer, or an explicit revert to the Bose cloud) — a speaker pointing at a dead URL stays owned and is **re-claimed** automatically (covers stale bases after an IP change and retired second sticks; the re-claim path skips the model/firmware whitelist because the speaker has already been migrated successfully before) |

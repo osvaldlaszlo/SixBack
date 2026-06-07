@@ -1122,6 +1122,29 @@ void handleGroupCreate(AsyncWebServerRequest* req) {
     }
 
     if (g_groups_mtx && xSemaphoreTake(g_groups_mtx, pdMS_TO_TICKS(100)) == pdTRUE) {
+        // Prune (2026-06-07, #22): die Bose-App loescht beim Stereo-Pair-
+        // Trennen den Cloud-Eintrag NICHT (Feld-Report vavolio-dev); nur der
+        // direkte removeGroup-Pfad raeumt auf (on-device verifiziert). Ein
+        // neues Pair mit denselben Geraeten ERSETZT deshalb alle alten
+        // Eintraege, die ein Mitglied teilen — sonst akkumuliert der Store
+        // bei haeufigem Pair/Unpair unbegrenzt im NVS.
+        size_t pruned = 0;
+        for (size_t i = g_groups.size(); i-- > 0; ) {
+            const Group& old = g_groups[i];
+            bool shared = (old.masterDeviceId == g.masterDeviceId);
+            for (const auto& orole : old.roles) {
+                if (shared) break;
+                if (orole.deviceId == g.masterDeviceId) { shared = true; break; }
+                for (const auto& nrole : g.roles) {
+                    if (orole.deviceId == nrole.deviceId) { shared = true; break; }
+                }
+            }
+            if (shared) { g_groups.erase(g_groups.begin() + i); ++pruned; }
+        }
+        if (pruned) {
+            Serial.printf("[group] CREATE pruned %u stale group(s) sharing members\n",
+                          (unsigned)pruned);
+        }
         g_groups.push_back(g);
         g_next_group_id++;
         groupsSave_();

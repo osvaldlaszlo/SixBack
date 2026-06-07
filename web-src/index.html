@@ -1437,8 +1437,9 @@ function toggleSpeaker(ev, devId) {
   const nowCollapsed = card.classList.toggle('collapsed');
   setSpeakerOpen_(devId, !nowCollapsed);
   updateChevron_(card, !nowCollapsed);
-  // Just expanded: fetch zone now so the row populates without waiting for the tick.
-  if (!nowCollapsed) pollZone(devId);
+  // Just expanded: fetch zone + stereo now so the rows populate without
+  // waiting for the tick.
+  if (!nowCollapsed) { pollZone(devId); pollStereo(devId); }
 }
 function setAllSpeakersOpen(open) {
   const m = speakerOpenMap_();
@@ -1634,6 +1635,7 @@ function speakerCard(s, myBase) {
           ${cloudLine}
           ${spotifyLine}
           <div class="speaker-zone" id="zone-${s.device_id}"></div>
+          <div class="speaker-zone" id="stereo-${s.device_id}"></div>
         </div>
         <div class="actions">${actionButtonsHtml(s)}</div>
       </div>
@@ -2704,6 +2706,96 @@ async function ungroupZone(devId) {
   kickPollZone(affected);
 }
 
+// ---- Stereo-Pair (ST10) poll + render ----
+// Live device state from the speaker's /getGroup, mirroring the zone row:
+// polled only for EXPANDED cards, silent on failure, no stacking. Stereo
+// pairs are an ST10-only feature (thlucas1/bosesoundtouchapi; the ST30
+// advertises /addGroup in supportedURLs but doesn't actually support
+// pairing — verified 2026-06-07), so everything is gated on the model
+// string here and no request is made for other models.
+STATE.stereo = {};
+STATE.stereoInflight = {};
+
+function isStereoCapable_(devId) {
+  const s = (STATE.speakers || []).find(x => x.device_id === devId);
+  return !!(s && /SoundTouch 10\b/i.test(s.model || ''));
+}
+
+async function pollStereo(devId) {
+  if (!isStereoCapable_(devId)) return;
+  if (STATE.stereoInflight[devId]) return;
+  STATE.stereoInflight[devId] = true;
+  try {
+    const v = await api(`/api/speaker/${encodeURIComponent(devId)}/stereo-pair`);
+    STATE.stereo[devId] = v;
+    renderStereoRow_(devId);
+  } catch(e) { /* speaker offline / endpoint error — silent */ }
+  finally { STATE.stereoInflight[devId] = false; }
+}
+
+function renderStereoRow_(devId) {
+  const row = document.getElementById('stereo-' + devId);
+  if (!row) return;
+  if (!isStereoCapable_(devId)) { row.innerHTML = ''; return; }
+  const v = STATE.stereo[devId];
+  if (!v) { row.innerHTML = ''; return; }
+  if (!v.paired) {
+    // Don't clobber an in-progress selection on the 10s re-poll.
+    const existing = document.getElementById('stereopick-' + devId);
+    if (existing && existing.value) return;
+    const others = (STATE.speakers || []).filter(s =>
+      s.device_id && s.device_id !== devId &&
+      /SoundTouch 10\b/i.test(s.model || '') && (s.status || '') !== 'OFFLINE');
+    if (others.length === 0) { row.innerHTML = ''; return; }
+    const opts = others.map(s =>
+      `<option value="${esc(s.device_id)}">${esc(s.name || s.device_id)}</option>`).join('');
+    row.innerHTML =
+      `<label class="zone-pick" title="Join two SoundTouch 10 into one left/right stereo image. This speaker becomes the LEFT channel.">Stereo pair (this = left) ` +
+      `<select id="stereopick-${devId}"><option value="">— right speaker —</option>${opts}</select>` +
+      `</label>` +
+      `<button class="zone-pick" onclick="stereoPair('${devId}')">⧉ Pair</button>`;
+    return;
+  }
+  const role    = (v.roles || []).find(r => r.deviceId === devId);
+  const partner = (v.roles || []).find(r => r.deviceId !== devId);
+  const partnerName = partner ? zoneMemberName_({deviceId: partner.deviceId}) : '';
+  row.innerHTML =
+    `<span class="zone-badge" title="Left/right stereo pair — the two speakers present as one device.">⧉ Stereo: ${esc(v.name || '')} · ${esc(role ? role.role : '?')}</span>` +
+    (partnerName ? `<span style="color:var(--mute)">with ${esc(partnerName)}</span>` : '') +
+    `<button class="zone-pick danger" onclick="stereoUnpair('${devId}')">Unpair</button>`;
+}
+
+function kickPollStereo(devIds) {
+  const ids = Array.isArray(devIds) ? devIds : [devIds];
+  const doIt = () => ids.forEach(id => pollStereo(id));
+  doIt();
+  setTimeout(doIt, 800);
+  setTimeout(doIt, 2500);
+}
+
+async function stereoPair(devId) {
+  const sel = document.getElementById('stereopick-' + devId);
+  const partner = sel ? sel.value : '';
+  if (!partner) { toast('Pick the right-channel speaker'); return; }
+  try {
+    await api(`/api/speaker/${encodeURIComponent(devId)}/stereo-pair`, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ partner }),
+    });
+  } catch(e) { toast('Stereo pair failed: ' + e.message); }
+  kickPollStereo([devId, partner]);
+}
+
+async function stereoUnpair(devId) {
+  const v = STATE.stereo[devId];
+  const affected = [devId];
+  if (v && v.roles) v.roles.forEach(r => { if (r.deviceId) affected.push(r.deviceId); });
+  try {
+    await api(`/api/speaker/${encodeURIComponent(devId)}/stereo-pair`, { method:'DELETE' });
+  } catch(e) { toast('Unpair failed: ' + e.message); }
+  kickPollStereo(affected);
+}
+
 function startNowPlayingPoll() {
   if (STATE.nowPlayingTimer) clearInterval(STATE.nowPlayingTimer);
   const tick = () => {
@@ -2713,7 +2805,10 @@ function startNowPlayingPoll() {
       // Zone is a live GET on the speaker; only fetch it for expanded cards
       // (the zone row is hidden on collapsed cards anyway). Bounds blocking load.
       const card = document.getElementById('sp-' + s.device_id);
-      if (card && !card.classList.contains('collapsed')) pollZone(s.device_id);
+      if (card && !card.classList.contains('collapsed')) {
+        pollZone(s.device_id);
+        pollStereo(s.device_id);   // ST10-gated in pollStereo selbst
+      }
     });
   };
   // First tick after a short delay so initial page-render isn't slowed by

@@ -1752,6 +1752,273 @@ void handleZoneMember(AsyncWebServerRequest* req, JsonDocument& body) {
 }
 
 // -----------------------------------------------------------------------------
+// Stereo-Pair (ST10) — device-direct via BMX :8090 /addGroup + /removeGroup.
+//   Live-Wahrheit aus /getGroup des Speakers (stateless, analog ZoneManager).
+//   On-device verifiziert 2026-06-07 (2x ST10): addGroup am Master (= LEFT)
+//   bildet das Paar sofort (status GROUP_OK, kein Reboot, Geraetenamen
+//   bleiben); der Speaker registriert die Gruppe selbst im cloud-seitigen
+//   Group-Store und loescht sie dort beim removeGroup wieder. removeGroup
+//   ist ein GET und MUSS an den Master gehen (thlucas1/bosesoundtouchapi,
+//   RemoveGroupStereoPair). Stereo-Pair ist laut derselben Quelle ST10-only;
+//   supportedURLs taugt NICHT als Gate (auch die ST30 advertised /addGroup —
+//   verifiziert 2026-06-07): das Modell-Gating macht die UI, das Backend
+//   gated bewusst nicht.
+// -----------------------------------------------------------------------------
+struct StereoView {
+    bool   paired = false;
+    String groupId, name, masterId;
+    struct Role { String deviceId, role, ip; };
+    std::vector<Role> roles;
+};
+
+// GET /getGroup eines Speakers + Parse. false nur bei HTTP-/Netz-Fehler;
+// "kein Paar" ist ein Erfolgsfall (paired=false).
+static bool fetchStereoView_(const String& spIp, StereoView& out) {
+    HTTPClient h;
+    h.setReuse(false);
+    h.setConnectTimeout(2000);
+    h.setTimeout(4000);
+    String u = "http://" + spIp + ":" + String(BOSE_BMX_PORT) + "/getGroup";
+    if (!h.begin(u)) return false;
+    int code = h.GET();
+    if (code != 200) { h.end(); return false; }
+    String xml = h.getString();
+    h.end();
+
+    auto attr = [&](const char* tag, const char* a) -> String {
+        int t = xml.indexOf(String("<") + tag);
+        if (t < 0) return String();
+        int e = xml.indexOf('>', t);
+        if (e < 0) return String();
+        String hdr = xml.substring(t, e);
+        String needle = String(a) + "=\"";
+        int s = hdr.indexOf(needle);
+        if (s < 0) return String();
+        s += needle.length();
+        int q = hdr.indexOf('"', s);
+        return q > s ? hdr.substring(s, q) : String();
+    };
+    auto tagIn = [](const String& scope, const char* tag) -> String {
+        String open = String("<") + tag + ">", close = String("</") + tag + ">";
+        int s = scope.indexOf(open);
+        if (s < 0) return String();
+        s += open.length();
+        int e = scope.indexOf(close, s);
+        return e > s ? scope.substring(s, e) : String();
+    };
+
+    out = StereoView();
+    out.groupId = attr("group", "id");
+    if (out.groupId.length() == 0) return true;   // <group /> = kein Paar
+    out.paired   = true;
+    out.name     = sixback::unescapeXml(tagIn(xml, "name"));
+    out.masterId = tagIn(xml, "masterDeviceId");
+    int pos = 0;
+    while (true) {
+        int p = xml.indexOf("<groupRole>", pos);
+        if (p < 0) break;
+        int e = xml.indexOf("</groupRole>", p);
+        if (e < 0) break;
+        String body = xml.substring(p, e);
+        StereoView::Role r;
+        r.deviceId = tagIn(body, "deviceId");
+        r.role     = tagIn(body, "role");
+        r.ip       = tagIn(body, "ipAddress");
+        if (r.deviceId.length()) out.roles.push_back(r);
+        pos = e + 12;
+    }
+    return true;
+}
+
+static void emitStereoView_(JsonDocument& out, const StereoView& sv, const String& forId) {
+    out["paired"]   = sv.paired;
+    out["groupId"]  = sv.groupId;
+    out["name"]     = sv.name;
+    out["masterId"] = sv.masterId;
+    out["isMaster"] = sv.paired && (sv.masterId == forId);
+    JsonArray arr = out["roles"].to<JsonArray>();
+    for (const auto& r : sv.roles) {
+        JsonObject o = arr.add<JsonObject>();
+        o["deviceId"] = r.deviceId;
+        o["role"]     = r.role;
+        o["ip"]       = r.ip;
+    }
+}
+
+// GET /api/speaker/{id}/stereo-pair — Live-Paar-Status vom Speaker.
+void handleStereoPairGet(AsyncWebServerRequest* req) {
+    String id = pathParam(0);
+    String spIp;
+    {
+        auto& inv = sixback::SpeakerInventory::instance();
+        sixback::SpeakerInventory::LockGuard g(inv);
+        auto* sp = inv.findById(id);
+        if (!sp) { req->send(404, "application/json", "{\"error\":\"unknown deviceId\"}"); return; }
+        spIp = sp->ip;
+    }
+    StereoView sv;
+    if (!fetchStereoView_(spIp, sv)) {
+        req->send(502, "application/json", "{\"error\":\"speaker unreachable\"}");
+        return;
+    }
+    JsonDocument out;
+    emitStereoView_(out, sv, id);
+    String b; serializeJson(out, b);
+    req->send(200, "application/json", b);
+}
+
+// POST /api/speaker/{id}/stereo-pair  { partner:"<deviceId>", name?:"..." }
+//   {id} wird Master + LEFT, partner wird RIGHT (Konvention aus dem
+//   on-device-Test + Feld-Report #22). Default-Name: "<left> + <right>".
+void handleStereoPairCreate(AsyncWebServerRequest* req, JsonDocument& body) {
+    String id      = pathParam(0);
+    String partner = String((const char*)(body["partner"] | ""));
+    String name    = String((const char*)(body["name"]    | ""));
+    if (partner.length() == 0) { req->send(400, "application/json", "{\"error\":\"partner required\"}"); return; }
+    if (partner == id)         { req->send(400, "application/json", "{\"error\":\"partner must differ\"}"); return; }
+
+    String ipL, ipR, nameL, nameR;
+    {
+        auto& inv = sixback::SpeakerInventory::instance();
+        sixback::SpeakerInventory::LockGuard g(inv);
+        auto* l = inv.findById(id);
+        auto* r = inv.findById(partner);
+        if (!l || !r) { req->send(404, "application/json", "{\"error\":\"unknown deviceId\"}"); return; }
+        ipL = l->ip; nameL = l->name;
+        ipR = r->ip; nameR = r->name;
+    }
+
+    // Pre-Check: keiner der beiden darf schon in einem Paar stecken.
+    StereoView pre;
+    if (fetchStereoView_(ipL, pre) && pre.paired) {
+        req->send(409, "application/json", "{\"error\":\"speaker already in a stereo pair — unpair first\"}");
+        return;
+    }
+    if (fetchStereoView_(ipR, pre) && pre.paired) {
+        req->send(409, "application/json", "{\"error\":\"partner already in a stereo pair — unpair first\"}");
+        return;
+    }
+
+    if (name.length() == 0) name = nameL + " + " + nameR;
+
+    // WICHTIG: addGroup darf NICHT synchron aus dem Handler laufen. Der
+    // Speaker ruft waehrend der addGroup-Verarbeitung SYNCHRON zu unserem
+    // BMX-Server (:8000) zurueck (Group-Registrierung); beide Server teilen
+    // sich den async_tcp-Task — ein blockierender Handler verhungert den
+    // Callback -> Deadlock bis Timeout (-11), on-device beobachtet
+    // 2026-06-07. Deshalb fire-and-forget-Task + 202; die UI re-pollt den
+    // Paar-Status sowieso (kickPollStereo).
+    struct Ctx { String xml, ipL, id, partner; };
+    Ctx* ctx = new Ctx();
+    ctx->ipL = ipL; ctx->id = id; ctx->partner = partner;
+    ctx->xml.reserve(512);
+    ctx->xml += "<?xml version=\"1.0\" encoding=\"UTF-8\"?><group>";
+    ctx->xml += "<name>"; ctx->xml += sixback::escapeXml(name); ctx->xml += "</name>";
+    ctx->xml += "<masterDeviceId>"; ctx->xml += id; ctx->xml += "</masterDeviceId>";
+    ctx->xml += "<roles>";
+    ctx->xml += "<groupRole><deviceId>"; ctx->xml += id;      ctx->xml += "</deviceId><role>LEFT</role><ipAddress>";  ctx->xml += ipL; ctx->xml += "</ipAddress></groupRole>";
+    ctx->xml += "<groupRole><deviceId>"; ctx->xml += partner; ctx->xml += "</deviceId><role>RIGHT</role><ipAddress>"; ctx->xml += ipR; ctx->xml += "</ipAddress></groupRole>";
+    ctx->xml += "</roles></group>";
+
+    BaseType_t rc = xTaskCreate([](void* arg) {
+        Ctx* c = (Ctx*)arg;
+        HTTPClient h;
+        h.setReuse(false);
+        h.setConnectTimeout(2000);
+        h.setTimeout(10000);
+        String u = "http://" + c->ipL + ":" + String(BOSE_BMX_PORT) + "/addGroup";
+        int code = -1; String resp;
+        if (h.begin(u)) {
+            h.addHeader("Content-Type", "application/xml");
+            code = h.POST(c->xml);
+            if (code > 0) resp = h.getString();
+            h.end();
+        }
+        bool ok = (code == 200) && (resp.indexOf("<status>GROUP_OK</status>") >= 0);
+        Serial.printf("[stereo] addGroup %s+%s -> HTTP %d %s\n",
+                      c->id.c_str(), c->partner.c_str(), code, ok ? "GROUP_OK" : "FAIL");
+        delete c;
+        vTaskDelete(nullptr);
+    }, "stereo-pair", 8192, ctx, 1, nullptr);
+    if (rc != pdPASS) {
+        delete ctx;
+        req->send(500, "application/json", "{\"error\":\"task create failed\"}");
+        return;
+    }
+    req->send(202, "application/json", "{\"ok\":true,\"state\":\"pairing\"}");
+}
+
+// DELETE /api/speaker/{id}/stereo-pair — trennt das Paar. Funktioniert von
+// beiden Karten aus: removeGroup wird immer an den MASTER geschickt
+// (Pflicht laut bosesoundtouchapi; on-device bestaetigt). Idempotent.
+void handleStereoPairRemove(AsyncWebServerRequest* req) {
+    String id = pathParam(0);
+    String spIp;
+    {
+        auto& inv = sixback::SpeakerInventory::instance();
+        sixback::SpeakerInventory::LockGuard g(inv);
+        auto* sp = inv.findById(id);
+        if (!sp) { req->send(404, "application/json", "{\"error\":\"unknown deviceId\"}"); return; }
+        spIp = sp->ip;
+    }
+    StereoView sv;
+    if (!fetchStereoView_(spIp, sv)) {
+        req->send(502, "application/json", "{\"error\":\"speaker unreachable\"}");
+        return;
+    }
+    if (!sv.paired) {
+        req->send(200, "application/json", "{\"ok\":true,\"paired\":false}");
+        return;
+    }
+    // Master-IP aufloesen: aus den Rollen (tragen ipAddress), sonst Inventory.
+    String masterIp = spIp;
+    if (sv.masterId != id) {
+        masterIp = "";
+        for (const auto& r : sv.roles) {
+            if (r.deviceId == sv.masterId && r.ip.length()) { masterIp = r.ip; break; }
+        }
+        if (masterIp.length() == 0) {
+            auto& inv = sixback::SpeakerInventory::instance();
+            sixback::SpeakerInventory::LockGuard g(inv);
+            auto* m = inv.findById(sv.masterId);
+            if (m) masterIp = m->ip;
+        }
+        if (masterIp.length() == 0) {
+            req->send(502, "application/json", "{\"error\":\"master speaker not resolvable\"}");
+            return;
+        }
+    }
+    // Wie beim Pairing: der Speaker loescht waehrend removeGroup synchron
+    // den Eintrag in unserem Group-Store (:8000) — removeGroup deshalb
+    // ebenfalls als fire-and-forget-Task statt blockierend im Handler
+    // (async_tcp-Starvation, s.o.). 202 + UI-Re-Poll.
+    struct Ctx { String masterIp, masterId; };
+    Ctx* ctx = new Ctx();
+    ctx->masterIp = masterIp;
+    ctx->masterId = sv.masterId;
+    BaseType_t rc = xTaskCreate([](void* arg) {
+        Ctx* c = (Ctx*)arg;
+        HTTPClient h;
+        h.setReuse(false);
+        h.setConnectTimeout(2000);
+        h.setTimeout(10000);
+        String u = "http://" + c->masterIp + ":" + String(BOSE_BMX_PORT) + "/removeGroup";
+        int code = -1;
+        if (h.begin(u)) { code = h.GET(); h.end(); }
+        Serial.printf("[stereo] removeGroup master=%s -> HTTP %d\n",
+                      c->masterId.c_str(), code);
+        delete c;
+        vTaskDelete(nullptr);
+    }, "stereo-unpair", 8192, ctx, 1, nullptr);
+    if (rc != pdPASS) {
+        delete ctx;
+        req->send(500, "application/json", "{\"error\":\"task create failed\"}");
+        return;
+    }
+    req->send(202, "application/json", "{\"ok\":true,\"state\":\"unpairing\"}");
+}
+
+// -----------------------------------------------------------------------------
 // GET /api/speaker/{id}/now-playing-live
 //   Proxy fuer Speaker /now_playing (Live-Pull, nicht aus dem SCMUDC-Event-
 //   Cache). Gibt getrimmte JSON-Sicht zurueck mit location-derived
@@ -3423,6 +3690,11 @@ void registerApiEndpoints(AsyncWebServer& ui) {
     routeJsonBody(ui, "^/api/zone/create$",   HTTP_POST, handleZoneCreate);
     routeJsonBody(ui, "^/api/zone/dissolve$", HTTP_POST, handleZoneDissolve);
     routeJsonBody(ui, "^/api/zone/member$",   HTTP_POST, handleZoneMember);
+
+    // Stereo-Pair (ST10, #22) — device-direct addGroup/removeGroup
+    routeT(ui, "^/api/speaker/([^/]+)/stereo-pair$", HTTP_GET,    handleStereoPairGet);
+    routeJsonBody(ui, "^/api/speaker/([^/]+)/stereo-pair$", HTTP_POST, handleStereoPairCreate);
+    routeT(ui, "^/api/speaker/([^/]+)/stereo-pair$", HTTP_DELETE, handleStereoPairRemove);
 
     routeT(ui, "^/api/speaker/([^/]+)/dlna/servers$", HTTP_GET, handleDlnaServers);
     routeT(ui, "/api/dlna/describe", HTTP_GET, handleDlnaDescribe);
