@@ -17,7 +17,7 @@ No subscription, no account, no Bose servers.  One USB stick on your LAN.
 > functionality is preserved; the rename reflects the project's identity
 > independent of any Bose trademark.
 
-## Status (v0.8.16)
+## Status (v0.8.17)
 
 | Component                                                            | State                                                                                                              |
 | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
@@ -31,6 +31,7 @@ No subscription, no account, no Bose servers.  One USB stick on your LAN.
 | Preset push to speaker — serialized FreeRTOS queue (v0.6.0)          | working — single persistent worker drains pushes one-by-one; depth 16, 503 when full; refuses with an actionable HTTP 409 ("migrate this speaker first") when the speaker isn't migrated yet, instead of a confusing "didn't save" (v0.8.7); waits for the speaker to actually reach *playing* state before the long-press (up to ~18 s) so a slow stream-start no longer drops the preset (v0.8.8) |
 | **Source self-healing** (v0.8.8)                                     | working — a migrated speaker whose SixBack account never bound (empty `margeAccountUUID` → no TuneIn/Spotify/DLNA sources registered, so every push failed with `/select=500`) is detected on the periodic status check and **auto-re-bound** (synthetic per-device account id + `/setMargeAccount`), re-registering its sources with no user action; a `⚠ sources not synced` badge + a **Re-Sync Sources** button surface it in the WebUI too (#10) |
 | **Captive portal** — WiFi setup AP                                   | working — fixed the `ERR_TOO_MANY_REDIRECTS` redirect loop that broke the setup page (the root route was a regex pattern handed to a non-regex router); the portal now loads cleanly (v0.8.8, #12) |
+| **Compressed NVS stores** (v0.8.17)                                  | working — the JSON stores (presets, inventory, stream/Spotify libraries) are now heatshrink-compressed in NVS (vendored [atomicobject/heatshrink](https://github.com/atomicobject/heatshrink) v0.4.1, 1.6 KB encoder state, measured factor ~2-4 on real store data), raising the per-stick ceiling from ~7 fully-loaded speakers to 15-20+. Values under 512 B stay plaintext; legacy stores migrate in place on first save; every decode path is fail-safe (fuzz-tested host-side, 2700 cases under ASan/UBSan) and a corrupt frame can never hang the boot. **Note:** firmware older than v0.8.17 cannot read compressed stores — after a manual downgrade the preset store re-seeds from the speakers, but stream/Spotify library tiles would need a re-import |
 | **Preset / inventory store — NVS blob storage** (v0.8.15)           | working — both per-stick stores (preset assignments, speaker inventory) were single NVS *strings*, which hit ESP-IDF's hard 4000-byte `nvs_set_str` limit at roughly five speakers with full presets: from then on **every** save failed regardless of free space (the "partition full" error was misleading — the partition was two-thirds empty), and a cleanup pass could destroy the last persisted state, so presets vanished on the next reboot or OTA update. Both stores are now NVS **blobs** (page-chunked, limit = partition size), the cleanup backs up and restores the previous value instead of sacrificing it, and a genuine out-of-space reports an accurate error. Existing data migrates in place on first save. Practical ceiling on the 24 KB NVS partition is ~7 fully-loaded speakers per stick — beyond that, writes fail loudly but never destroy data |
 | **Preset-loss defense** (Defense-in-Depth)                           | working — `handleMigrate` pre-imports; `/presets` and `account/full` return 404 when store empty; TUNEIN source-block carries `username=TuneIn` so `sourceAccount` survives every sync |
 | **Opaque-source passthrough** — DLNA / UPnP / Bluetooth presets      | working — original `<ContentItem>` captured at import and replayed 1:1; `STORED_MUSIC` and `STORED_MUSIC_MEDIA_RENDERER` declared in `accountSources`; serialized as Bosman-schema `<preset>` blocks with `<location>` + `<source>` reference (v0.6.537) |
@@ -248,6 +249,10 @@ the lab stocked with test hardware. A ⭐ on the repo is just as welcome.
 
 ## Acknowledgements
 
+- **[atomicobject/heatshrink](https://github.com/atomicobject/heatshrink)** (v0.4.1, ISC) —
+  embedded LZSS compressor vendored under `src/heatshrink/`; SixBack uses it
+  to compress the NVS-persisted JSON stores (presets, inventory, libraries)
+  with a 1.6 KB encoder state, raising the per-stick speaker ceiling.
 - **[julius-d/ueberboese-api](https://github.com/julius-d/ueberboese-api)** —
   OpenAPI specification of the legacy Bose SoundTouch streaming cloud,
   reconstructed from observed traffic. It is SixBack's verifiable

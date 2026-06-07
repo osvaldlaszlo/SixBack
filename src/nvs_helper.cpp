@@ -6,7 +6,163 @@
 #include <memory>
 #include <vector>
 
+extern "C" {
+#include "heatshrink/heatshrink_encoder.h"
+#include "heatshrink/heatshrink_decoder.h"
+}
+
 namespace sixback {
+
+namespace {
+
+// ---------------------------------------------------------------------------
+// Transparente Blob-Kompression (heatshrink, vendored src/heatshrink, ISC).
+//
+// Warum: die JSON-Stores (Presets, Inventory, Libraries) wachsen linear mit
+// der Speaker-Zahl; unkomprimiert traegt die 24-KB-NVS-Partition ~7 voll
+// belegte Speaker (Blob-Update haelt alt+neu gleichzeitig). On-device
+// vermessen 2026-06-07: ROM-tdefl braucht 167.744 B Encoder-State — passt
+// nicht in den Heap unter SixBack-Last auf C3/C6. heatshrink w=8/l=4:
+// 1.596 B Encoder-State, 548 B Decoder-State, Faktor ~2-3,6 auf Store-JSON,
+// 13 ms fuer 12 KB auf dem C6. Einheitlich auf allen 4 Chips.
+//
+// Blob-Format (Generationen-Kette, in-place-Migration beim ersten Save):
+//   STRING-Typ            -> Legacy <= v0.8.14 (nvsLoadJson-Fallback)
+//   Blob, beginnt mit '{' -> Klartext-JSON (v0.8.15/16 + kleine Werte)
+//   Blob, beginnt mit "HS"-> [0]='H' [1]='S' [2]=(window<<4)|lookahead
+//                            [3..6]=Klartextlaenge LE32, [7..]=heatshrink
+// JSON beginnt immer mit '{' -> kollisionsfrei zum Magic.
+// ---------------------------------------------------------------------------
+constexpr uint8_t kHsWindow    = 8;   // 2^8-Fenster: 1,6 KB Encoder-State
+constexpr uint8_t kHsLookahead = 4;
+constexpr size_t  kHsHeader    = 7;
+constexpr size_t  kCompressMin = 512;     // kleine Werte (TuneIn-Cache, Auth,
+                                          // Diag) bleiben Klartext — Overhead
+                                          // lohnt erst ab Store-Groesse
+constexpr size_t  kPlainMax    = 65536;   // Sanity-Limit beim Laden (Partition
+                                          // ist 24 KB; mehr = korrupt)
+
+// Komprimiert 'in' in einen geframten Blob (out/outLen). false wenn nicht
+// lohnend (Ergebnis nicht kleiner) oder OOM — Caller schreibt dann Klartext.
+// Review-Härtung 2026-06-07: alle Buffer via new(std::nothrow) — das
+// Framework baut mit -fexceptions, ein ungefangenes bad_alloc aus
+// std::vector waere abort() statt des dokumentierten Klartext-Fallbacks.
+// Beide Schleifen tragen einen Totalfortschritts-Guard (jede Iteration muss
+// inPos ODER outPos bewegen), sonst sauberes false statt Haenger.
+bool hsCompress_(const String& in, std::unique_ptr<uint8_t[]>& out, size_t& outLen) {
+    const size_t inLen = in.length();
+    if (inLen < kHsHeader + 1 || inLen > kPlainMax) return false;  // symmetrisch zum Load-Limit
+    out.reset(new (std::nothrow) uint8_t[inLen]);
+    if (!out) return false;
+    heatshrink_encoder* hse = heatshrink_encoder_alloc(kHsWindow, kHsLookahead);
+    if (!hse) { out.reset(); return false; }
+    out[0] = 'H'; out[1] = 'S';
+    out[2] = (uint8_t)((kHsWindow << 4) | kHsLookahead);
+    out[3] = (uint8_t)(inLen & 0xFF);
+    out[4] = (uint8_t)((inLen >> 8) & 0xFF);
+    out[5] = (uint8_t)((inLen >> 16) & 0xFF);
+    out[6] = (uint8_t)((inLen >> 24) & 0xFF);
+    size_t inPos = 0, outPos = kHsHeader;
+    bool ok = true;
+    while (inPos < inLen && ok) {
+        const size_t inPosBefore = inPos, outPosBefore = outPos;
+        size_t n = 0;
+        heatshrink_encoder_sink(hse, (uint8_t*)in.c_str() + inPos, inLen - inPos, &n);
+        inPos += n;
+        HSE_poll_res pr;
+        do {
+            if (outPos >= inLen) { ok = false; break; }   // wird nicht kleiner
+            size_t o = 0;
+            pr = heatshrink_encoder_poll(hse, out.get() + outPos, inLen - outPos, &o);
+            outPos += o;
+        } while (pr == HSER_POLL_MORE);
+        if (ok && inPos == inPosBefore && outPos == outPosBefore) {
+            ok = false;   // kein Fortschritt -> nie busy-spinnen
+        }
+    }
+    while (ok) {
+        HSE_finish_res fr = heatshrink_encoder_finish(hse);
+        if (fr == HSER_FINISH_DONE) break;
+        if (fr != HSER_FINISH_MORE) { ok = false; break; }
+        if (outPos >= inLen)        { ok = false; break; }
+        size_t o = 0;
+        heatshrink_encoder_poll(hse, out.get() + outPos, inLen - outPos, &o);
+        if (o == 0) { ok = false; break; }   // FINISH_MORE ohne Output = stuck
+        outPos += o;
+    }
+    heatshrink_encoder_free(hse);
+    if (!ok || outPos >= inLen) { out.reset(); return false; }
+    outLen = outPos;
+    return true;
+}
+
+// Entpackt einen "HS"-geframten Blob nach 'out' (NUL-terminiert, Laenge =
+// plainLen aus dem Frame). Window/Lookahead kommen aus dem Frame —
+// vorwaertskompatibel falls die Parameter je geaendert werden. false bei
+// jedem Decode-/Konsistenz-/OOM-Fehler; haengt NIE (Totalfortschritts-Guard
+// — Review-Befund 2026-06-07: ein inkonsistenter Frame mit zu kleinem
+// plainLen liess die sink-Schleife sonst endlos spinnen -> WDT-Boot-Loop).
+bool hsDecompress_(const uint8_t* in, size_t inLen, std::unique_ptr<char[]>& out) {
+    if (inLen < kHsHeader || in[0] != 'H' || in[1] != 'S') return false;
+    const uint8_t window    = in[2] >> 4;
+    const uint8_t lookahead = in[2] & 0x0F;
+    const size_t plainLen = (size_t)in[3] | ((size_t)in[4] << 8)
+                          | ((size_t)in[5] << 16) | ((size_t)in[6] << 24);
+    if (plainLen == 0 || plainLen > kPlainMax) {
+        Serial.printf("[nvs-hs] reject: plainLen=%u\n", (unsigned)plainLen);
+        return false;
+    }
+    if (window < 4 || window > 15 || lookahead < 2 || lookahead >= window) {
+        Serial.printf("[nvs-hs] reject: params w=%u l=%u\n", window, lookahead);
+        return false;
+    }
+    out.reset(new (std::nothrow) char[plainLen + 1]);
+    if (!out) return false;
+    heatshrink_decoder* hsd = heatshrink_decoder_alloc(256, window, lookahead);
+    if (!hsd) { out.reset(); return false; }
+    size_t cPos = kHsHeader, dPos = 0;
+    bool ok = true;
+    while (cPos < inLen && ok) {
+        const size_t cPosBefore = cPos, dPosBefore = dPos;
+        size_t n = 0;
+        heatshrink_decoder_sink(hsd, (uint8_t*)in + cPos, inLen - cPos, &n);
+        cPos += n;
+        HSD_poll_res pr = HSDR_POLL_EMPTY;
+        do {
+            if (dPos >= plainLen) break;   // erwartete Laenge erreicht
+            size_t o = 0;
+            pr = heatshrink_decoder_poll(hsd, (uint8_t*)out.get() + dPos, plainLen - dPos, &o);
+            dPos += o;
+        } while (pr == HSDR_POLL_MORE);
+        if (pr == HSDR_POLL_ERROR_NULL || pr == HSDR_POLL_ERROR_UNKNOWN) ok = false;
+        if (ok && cPos == cPosBefore && dPos == dPosBefore) {
+            // Kein Fortschritt: Input-Buffer voll (sink n=0) und Output am
+            // (deklarierten) Ende, aber Komprimat uebrig -> Frame luegt ueber
+            // plainLen. Sauber ablehnen statt WDT-Boot-Loop.
+            Serial.println("[nvs-hs] reject: surplus input, frame inconsistent");
+            ok = false;
+        }
+    }
+    while (ok && dPos < plainLen) {
+        HSD_finish_res fr = heatshrink_decoder_finish(hsd);
+        if (fr != HSDR_FINISH_MORE) break;
+        size_t o = 0;
+        heatshrink_decoder_poll(hsd, (uint8_t*)out.get() + dPos, plainLen - dPos, &o);
+        dPos += o;
+        if (o == 0) break;
+    }
+    heatshrink_decoder_free(hsd);
+    if (!ok || dPos != plainLen) {
+        Serial.printf("[nvs-hs] decode FAIL: got %u, want %u\n",
+                      (unsigned)dPos, (unsigned)plainLen);
+        out.reset();
+        return false;
+    }
+    out[plainLen] = '\0';
+    return true;
+}
+
+} // namespace
 
 bool nvsLoadJson(const char* ns, const char* key, JsonDocument& doc) {
     Preferences p;
@@ -18,14 +174,26 @@ bool nvsLoadJson(const char* ns, const char* key, JsonDocument& doc) {
     // Eintrag typ-wechselnd durch ein Blob (NVS: neuer Wert ersetzt Typ+Wert).
     size_t blen = p.getBytesLength(key);
     if (blen > 0) {
-        std::unique_ptr<char[]> buf(new (std::nothrow) char[blen + 1]);
+        std::unique_ptr<uint8_t[]> buf(new (std::nothrow) uint8_t[blen + 1]);
         if (!buf) { p.end(); return false; }
         size_t got = p.getBytes(key, buf.get(), blen);
         p.end();
         if (got != blen) return false;
         buf[blen] = '\0';
-        // const char* erzwingt Copy-Mode in ArduinoJson — mit char* wuerde
-        // zero-copy in den gleich freigegebenen Buffer zeigen.
+        // "HS"-Frame -> heatshrink-komprimiert (seit Kompressions-Stufe);
+        // sonst Klartext-JSON-Blob (v0.8.15/16 + kleine Werte).
+        if (blen >= kHsHeader && buf[0] == 'H' && buf[1] == 'S') {
+            std::unique_ptr<char[]> plain;
+            if (!hsDecompress_(buf.get(), blen, plain)) {
+                Serial.printf("[nvs-load] FAIL hs-decode ns=%s key=%s blob=%u\n",
+                              ns, key, (unsigned)blen);
+                return false;
+            }
+            // const char* erzwingt Copy-Mode in ArduinoJson (kein zero-copy
+            // in den gleich freigegebenen Buffer).
+            return deserializeJson(doc, (const char*)plain.get())
+                   == DeserializationError::Ok;
+        }
         return deserializeJson(doc, (const char*)buf.get())
                == DeserializationError::Ok;
     }
@@ -49,15 +217,32 @@ bool nvsSaveJson(const char* ns, const char* key, JsonDocument& doc) {
     // Page — der Preset-Store ueberschritt das ab ~5 Speakern und JEDER
     // Save schlug fehl, obwohl die Partition zu 2/3 leer war. nvs_set_blob
     // chunkt ueber Pages; Limit jetzt ~Partitionsgroesse.
-    size_t n = p.putBytes(key, s.c_str(), s.length());
+    //
+    // Groessere Werte zusaetzlich heatshrink-komprimiert (Faktor ~2-3,6 auf
+    // Store-JSON) — hebt die Speaker-Decke der 24-KB-Partition entsprechend.
+    // Bei OOM / nicht-lohnender Kompression faellt der Save auf Klartext
+    // zurueck; der Load erkennt beides am Frame.
+    const uint8_t* data = (const uint8_t*)s.c_str();
+    size_t         dlen = s.length();
+    std::unique_ptr<uint8_t[]> packed;
+    size_t packedLen = 0;
+    bool hs = false;
+    if (dlen >= kCompressMin && hsCompress_(s, packed, packedLen)) {
+        data = packed.get();
+        dlen = packedLen;
+        hs   = true;
+    }
+    size_t n = p.putBytes(key, data, dlen);
     p.end();
-    if (n != s.length()) {
-        Serial.printf("[nvs-save] FAIL putBytes ns=%s key=%s json_len=%u wrote=%u\n",
-                      ns, key, (unsigned)s.length(), (unsigned)n);
+    if (n != dlen) {
+        Serial.printf("[nvs-save] FAIL putBytes ns=%s key=%s json_len=%u blob=%u wrote=%u%s\n",
+                      ns, key, (unsigned)s.length(), (unsigned)dlen, (unsigned)n,
+                      hs ? " (hs)" : "");
         return false;
     }
-    Serial.printf("[nvs-save] ok ns=%s key=%s json_len=%u (blob)\n",
-                  ns, key, (unsigned)s.length());
+    Serial.printf("[nvs-save] ok ns=%s key=%s json_len=%u blob=%u%s\n",
+                  ns, key, (unsigned)s.length(), (unsigned)dlen,
+                  hs ? " (hs)" : " (plain)");
     return true;
 }
 
@@ -128,33 +313,48 @@ bool nvsSaveJsonWithCleanup(const char* ns, const char* key, JsonDocument& doc) 
     // Fehlschlag zurueckschreiben (die soeben freigegebenen Entries reichen
     // dafuer sicher aus).
     Serial.printf("[nvs-cleanup] %s/%s pass2-fail — pass3 erase target-key + retry\n", ns, key);
-    std::vector<uint8_t> oldBlob;
+    // Backup-Buffer nothrow (Review 2026-06-07): ein bad_alloc-Abort genau
+    // hier wuerde den Alt-Stand zwischen remove und rewrite vernichten.
+    // Wenn das Backup nicht allozierbar ist, wird Pass 3 uebersprungen —
+    // lieber Save-Fail als Datenverlust.
+    std::unique_ptr<uint8_t[]> oldBlob;
+    size_t oldBlobLen = 0;
     String oldStr;
+    bool backupOk = true;
     {
         Preferences p;
         if (p.begin(ns, true)) {
             size_t blen = p.getBytesLength(key);
             if (blen > 0) {
-                oldBlob.resize(blen);
-                if (p.getBytes(key, oldBlob.data(), blen) != blen) oldBlob.clear();
+                oldBlob.reset(new (std::nothrow) uint8_t[blen]);
+                if (oldBlob && p.getBytes(key, oldBlob.get(), blen) == blen) {
+                    oldBlobLen = blen;
+                } else {
+                    oldBlob.reset();
+                    backupOk = false;
+                }
             } else {
                 oldStr = p.getString(key, "");
             }
             p.end();
         }
     }
+    if (!backupOk) {
+        Serial.printf("[nvs-cleanup] pass3 %s/%s SKIPPED (backup alloc fail) — alter Stand bleibt\n",
+                      ns, key);
+        return false;
+    }
     {
         Preferences p;
         if (p.begin(ns, false)) { p.remove(key); p.end(); }
     }
     bool ok = nvsSaveJson(ns, key, doc);
-    if (!ok && (oldBlob.size() > 0 || oldStr.length() > 0)) {
+    if (!ok && (oldBlobLen > 0 || oldStr.length() > 0)) {
         Preferences p;
         bool restored = false;
         if (p.begin(ns, false)) {
-            if (oldBlob.size() > 0) {
-                restored = p.putBytes(key, oldBlob.data(), oldBlob.size())
-                           == oldBlob.size();
+            if (oldBlobLen > 0) {
+                restored = p.putBytes(key, oldBlob.get(), oldBlobLen) == oldBlobLen;
             } else {
                 restored = p.putString(key, oldStr) > 0;
             }

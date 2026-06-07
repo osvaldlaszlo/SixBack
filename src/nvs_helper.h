@@ -8,16 +8,18 @@
 
 namespace sixback {
 
-// Liest ein NVS-key und parsed JSON in 'doc'. Seit 2026-06-07 ist das
-// Speicherformat BLOB (page-chunked, kein 4000-B-String-Limit); Legacy-
-// STRING-Eintraege (<= v0.8.14) werden transparent gelesen und beim
-// naechsten Save in-place durch ein Blob ersetzt. Gibt false zurueck wenn
-// nicht da oder Parse-Fehler.
+// Liest ein NVS-key und parsed JSON in 'doc'. Erkennt drei Generationen
+// transparent: Legacy-STRING (<= v0.8.14), Klartext-JSON-Blob (v0.8.15/16)
+// und heatshrink-komprimiertes Blob ("HS"-Frame, seit der Kompressions-
+// Stufe). Aeltere Formate werden beim naechsten Save in-place ersetzt.
+// Gibt false zurueck wenn nicht da, Decode- oder Parse-Fehler.
 bool nvsLoadJson(const char* ns, const char* key, JsonDocument& doc);
 
-// Serialisiert 'doc' und schreibt als BLOB unter ns/key. Blob-Limit =
-// min(508 KB, ~97 % Partition) statt der harten 4000 B von nvs_set_str —
-// Letzteres vernichtete ab ~5 Speakern jeden Save (Lab-Befund 2026-06-07).
+// Serialisiert 'doc' und schreibt als BLOB unter ns/key; Werte >= 512 B
+// werden heatshrink-komprimiert (w=8/l=4, ~1,6 KB transienter Heap,
+// Faktor ~2-3,6 auf Store-JSON), kleinere bleiben Klartext. Blob statt
+// String, weil nvs_set_str hart bei 4000 B endet — das vernichtete ab
+// ~5 Speakern jeden Save (Lab-Befund 2026-06-07).
 bool nvsSaveJson(const char* ns, const char* key, JsonDocument& doc);
 
 // Loescht einen Key.
