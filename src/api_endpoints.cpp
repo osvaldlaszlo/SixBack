@@ -153,6 +153,10 @@ void handleStatus(AsyncWebServerRequest* req) {
                         info.model == CHIP_ESP32C6 ? "ESP32-C6" : "?";
     chip["cores"]     = info.cores;
     chip["revision"]  = info.revision;
+    // Layout-Identitaet (Issue #23): unterscheidet die 16-MB- von der
+    // 8-MB-S3-Variante — fuer Support-Faelle ("welchen Webflasher-Button?").
+    // getFlashChipSize() liest die Image-Header-Konfiguration = geflashtes Layout.
+    chip["flash_size"] = ESP.getFlashChipSize();
     JsonObject cloud  = doc["cloud_replacement"].to<JsonObject>();
     cloud["port"]     = BOSE_HTTP_PORT;
     cloud["base_url"] = myBaseUrl();
@@ -2019,6 +2023,96 @@ void handleStereoPairRemove(AsyncWebServerRequest* req) {
 }
 
 // -----------------------------------------------------------------------------
+// POST /api/speaker/{id}/name  { name: "..." } — Speaker umbenennen (Issue #25).
+//   Device-direkt: POST :8090/name mit <name>...</name>. Ground Truth
+//   bosesoundtouchapi::SetName -> Put(SoundTouchNodes.name, SimpleConfig('name'))
+//   — und deren Put() ist laut Docstring ein HTTP POST. Der Name lebt AUF dem
+//   Speaker (reboot-persistent dort); wir spiegeln ihn nach 200 in den
+//   Inventory-Cache + NVS, der periodische /info-Refresh haelt ihn danach synchron.
+//   Fire-and-forget wie stereo-pair: ob /name speaker-seitig einen synchronen
+//   Callback zu unserem BMX-Server ausloest, ist nicht verifiziert — das
+//   Worker-Pattern kostet nichts und schliesst die async_tcp-Starvation
+//   (Lesson 2026-06-07, #22) kategorisch aus.
+//   ⚠ ZWEITER ST10-Quirk (on-device, FW 27.0.3): der Speaker wendet nur EINEN
+//   Rename pro Boot-Session an — jeder weitere noopt still (HTTP 200 + altes
+//   <info>). Reboot-persistent ist der Name aber. Die Body-Verify unten
+//   erkennt den Noop (Cache bleibt korrekt); die UI zeigt dann den
+//   Reboot-Hinweis. KEIN Auto-Reboot — Speaker koennte gerade spielen.
+// -----------------------------------------------------------------------------
+void handleSpeakerRename(AsyncWebServerRequest* req, JsonDocument& body) {
+    String id   = pathParam(0);
+    String name = String((const char*)(body["name"] | ""));
+    name.trim();
+    if (name.length() == 0) {
+        req->send(400, "application/json", "{\"error\":\"name required\"}");
+        return;
+    }
+    // Konservatives Limit: laengster bekannter Feld-Name liegt weit darunter;
+    // schuetzt NVS-Inventory-Eintrag + Speaker-XML vor Ausreissern.
+    if (name.length() > 64) {
+        req->send(400, "application/json", "{\"error\":\"name too long (max 64 chars)\"}");
+        return;
+    }
+    String spIp;
+    {
+        auto& inv = sixback::SpeakerInventory::instance();
+        sixback::SpeakerInventory::LockGuard g(inv);
+        auto* sp = inv.findById(id);
+        if (!sp) { req->send(404, "application/json", "{\"error\":\"unknown deviceId\"}"); return; }
+        spIp = sp->ip;
+    }
+
+    struct Ctx { String ip, id, name, xml; };
+    Ctx* ctx = new Ctx();
+    ctx->ip = spIp; ctx->id = id; ctx->name = name;
+    ctx->xml += "<name>"; ctx->xml += sixback::escapeXml(name); ctx->xml += "</name>";
+
+    BaseType_t rc = xTaskCreate([](void* arg) {
+        Ctx* c = (Ctx*)arg;
+        HTTPClient h;
+        h.setReuse(false);
+        h.setConnectTimeout(2000);
+        h.setTimeout(10000);
+        String u = "http://" + c->ip + ":" + String(BOSE_BMX_PORT) + "/name";
+        int code = -1; String resp;
+        if (h.begin(u)) {
+            // ⚠ ST10-Quirk (on-device 2026-06-07, FW 27.0.3): /name verlangt
+            // Content-Type "text/xml" — mit "application/xml" antwortet der
+            // Speaker 200 + ALTEM <info>-Dokument und wendet NICHTS an
+            // (silent noop). addGroup dagegen akzeptiert application/xml;
+            // die Picky-ness ist endpoint-spezifisch.
+            h.addHeader("Content-Type", "text/xml");
+            code = h.POST(c->xml);
+            if (code > 0) resp = h.getString();
+            h.end();
+        }
+        // 200 allein beweist nichts (siehe Quirk) — der Speaker echot bei
+        // Erfolg das <info>-Dokument mit dem NEUEN Namen. Darauf pruefen.
+        bool ok = (code == 200) && (resp.indexOf(c->xml) >= 0);
+        if (ok) {
+            // Cache aktualisieren; saveToNVS() lockt selbst -> NICHT im Scope rufen.
+            auto& inv = sixback::SpeakerInventory::instance();
+            {
+                sixback::SpeakerInventory::LockGuard g(inv);
+                auto* sp = inv.findById(c->id);
+                if (sp) sp->name = c->name;
+            }
+            inv.saveToNVS();
+        }
+        Serial.printf("[rename] %s -> \"%s\" HTTP %d %s\n",
+                      c->id.c_str(), c->name.c_str(), code, ok ? "OK" : "FAIL");
+        delete c;
+        vTaskDelete(nullptr);
+    }, "sp-rename", 8192, ctx, 1, nullptr);
+    if (rc != pdPASS) {
+        delete ctx;
+        req->send(500, "application/json", "{\"error\":\"task create failed\"}");
+        return;
+    }
+    req->send(202, "application/json", "{\"ok\":true,\"state\":\"renaming\"}");
+}
+
+// -----------------------------------------------------------------------------
 // GET /api/speaker/{id}/now-playing-live
 //   Proxy fuer Speaker /now_playing (Live-Pull, nicht aus dem SCMUDC-Event-
 //   Cache). Gibt getrimmte JSON-Sicht zurueck mit location-derived
@@ -3695,6 +3789,9 @@ void registerApiEndpoints(AsyncWebServer& ui) {
     routeT(ui, "^/api/speaker/([^/]+)/stereo-pair$", HTTP_GET,    handleStereoPairGet);
     routeJsonBody(ui, "^/api/speaker/([^/]+)/stereo-pair$", HTTP_POST, handleStereoPairCreate);
     routeT(ui, "^/api/speaker/([^/]+)/stereo-pair$", HTTP_DELETE, handleStereoPairRemove);
+
+    // Speaker umbenennen (#25) — device-direct POST /name
+    routeJsonBody(ui, "^/api/speaker/([^/]+)/name$", HTTP_POST, handleSpeakerRename);
 
     routeT(ui, "^/api/speaker/([^/]+)/dlna/servers$", HTTP_GET, handleDlnaServers);
     routeT(ui, "/api/dlna/describe", HTTP_GET, handleDlnaDescribe);

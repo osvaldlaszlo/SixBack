@@ -78,6 +78,34 @@
     Version <code id="ver">…</code> — pick <b>Fresh install</b> for a new stick,
     <b>Update existing</b> for a stick that already runs SixBack.
   </p>
+  <hr style="border:none; border-top:1px solid var(--mute); opacity:.3; margin:1.2em 0">
+  <h3 style="margin:.2em 0 .4em">ESP32-S3 with 8&nbsp;MB flash (Seeed XIAO ESP32S3 &amp; similar)</h3>
+  <p style="font-size:.9em">The buttons above flash the <b>16&nbsp;MB</b> S3 layout. Boards with only
+     <b>8&nbsp;MB flash + PSRAM</b> (e.g. Seeed&nbsp;XIAO&nbsp;ESP32S3) need this dedicated image instead —
+     the standard one does not fit and the flash would fail partway through.</p>
+  <p style="display:flex; gap:1.5em; justify-content:center; flex-wrap:wrap; align-items:flex-start; margin-top:.6em">
+    <span style="text-align:center">
+      <esp-web-install-button manifest="manifest-s3-8mb.json"></esp-web-install-button>
+      <br><small style="color:var(--mute); display:block; margin-top:.4em">Fresh install (S3 8&nbsp;MB) — erases all settings</small>
+    </span>
+    <span style="text-align:center">
+      <esp-web-install-button manifest="manifest-update-s3-8mb.json"></esp-web-install-button>
+      <br><small style="color:var(--mute); display:block; margin-top:.4em">Update existing (S3 8&nbsp;MB) — keeps settings</small>
+    </span>
+  </p>
+  <p style="color:var(--mute); font-size:.85em">
+    Not sure which one you have? The <code>Nxx</code> in the module name tells the flash size:
+    <code>N8…</code>&nbsp;=&nbsp;8&nbsp;MB, <code>N16…</code>&nbsp;=&nbsp;16&nbsp;MB.
+    XIAO&nbsp;ESP32S3 / Sense&nbsp;=&nbsp;8&nbsp;MB; XIAO&nbsp;ESP32S3&nbsp;<em>Plus</em>&nbsp;=&nbsp;16&nbsp;MB
+    (use the standard buttons above). PSRAM is required either way.<br>
+    <b>Use the update button only for the variant the device was originally flashed
+    with</b> — a device running the 16&nbsp;MB layout must use the standard update button,
+    and vice versa. Already-flashed devices show their layout in the Web&nbsp;UI status
+    line ("ESP32-S3 8MB" / "16MB").<br>
+    Manual flashing (esptool): <a href="sixback-s3-8mb-factory.bin">factory</a> @0x0 ·
+    <a href="sixback-s3-8mb-firmware.bin">firmware</a> @0x10000 ·
+    <a href="sixback-s3-8mb-littlefs.bin">littlefs</a> @0x610000
+  </p>
 </div>
 
 <div class="warn">

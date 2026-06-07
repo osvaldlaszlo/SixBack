@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SixBack — build release artefacts for ESP-Web-Tools distribution.
 #
-# For each target (s3, c3, c6) it produces:
+# For each target (esp32, s3, s3-8mb, c3, c6) it produces:
 #   webflasher/sixback-<tgt>-factory.bin   — merged bootloader+parts+app+fs
 #   webflasher/sixback-<tgt>-firmware.bin  — app-only (for OTA over WiFi)
 #   webflasher/sixback-<tgt>-littlefs.bin  — Web-UI image (for FS-OTA)
@@ -20,7 +20,7 @@ mkdir -p "$OUT"
 
 # --- 0) Release-tag handling ---------------------------------------------
 # v0.7.6: tag-based versioning. When invoked with a release tag (arg or
-# RELEASE_TAG env), all 4 targets are built with the SAME version string
+# RELEASE_TAG env), all targets are built with the SAME version string
 # baked in — eliminates the multi-target build drift (where the build
 # counter advanced per `pio run`, so s3-firmware.bin reported a different
 # version than c6-firmware.bin from the same release). Manifest.version
@@ -57,8 +57,8 @@ fi
 # partitions-4mb.csv. Followup umgesetzt: scripts/fs_exclude_esp32.py strippt
 # silence.mp3 (Spotify-only, ~120 KB) NUR fuer env:esp32 aus dem FS-Image
 # (PROJECT_DATA_DIR -> gefilterte Staging-Kopie). Damit passt esp32 wieder rein.
-"$HOME/.platformio/penv/bin/pio" run -e s3 -e c3 -e c6 -e esp32 -t buildfs
-"$HOME/.platformio/penv/bin/pio" run -e s3 -e c3 -e c6 -e esp32
+"$HOME/.platformio/penv/bin/pio" run -e s3 -e s3-8mb -e c3 -e c6 -e esp32 -t buildfs
+"$HOME/.platformio/penv/bin/pio" run -e s3 -e s3-8mb -e c3 -e c6 -e esp32
 
 # Resolve final version: tag if set, else read the core from version.h.
 # Dev FW_VERSION_STRING carries a "+<counter>" suffix (e.g. "0.8.4+1116");
@@ -86,6 +86,8 @@ APP_4MB_SYM=$((0x1D0000))    # 1.900.544 — app0/app1 in partitions-4mb.csv
 FS_4MB_SYM=$((0x40000))      #   262.144 — spiffs   in partitions-4mb.csv
 APP_16MB=$((0x300000))       # 3.145.728 — app0/app1 in partitions.csv (s3)
 FS_16MB=$((0x9E0000))        # 10.354.688 — spiffs in partitions.csv
+APP_8MB=$((0x300000))        # 3.145.728 — app0/app1 in partitions-8mb.csv (s3-8mb)
+FS_8MB=$((0x1E0000))         #  1.966.080 — spiffs in partitions-8mb.csv
 
 size_errors=0
 check_size() {
@@ -113,6 +115,8 @@ check_size "$PIO_BUILD/c6/firmware.bin"    $APP_4MB_SYM   "c6 app"
 check_size "$PIO_BUILD/c6/littlefs.bin"    $FS_4MB_SYM    "c6 fs"
 check_size "$PIO_BUILD/s3/firmware.bin"    $APP_16MB      "s3 app"
 check_size "$PIO_BUILD/s3/littlefs.bin"    $FS_16MB       "s3 fs"
+check_size "$PIO_BUILD/s3-8mb/firmware.bin" $APP_8MB      "s3-8mb app"
+check_size "$PIO_BUILD/s3-8mb/littlefs.bin" $FS_8MB       "s3-8mb fs"
 
 if [ "$size_errors" -gt 0 ]; then
   echo >&2
@@ -152,13 +156,30 @@ merge_target() {
 #       Wer das mal wieder anpasst: hier mitziehen, sonst landet das
 #       LittleFS-Image im falschen Flash-Bereich und der Web-Flasher
 #       liefert kaputte Factory-Images aus.
-merge_target esp32 esp32   4MB  0x3B0000  0x1000   # classic: bootloader@0x1000
-merge_target s3    esp32s3 16MB 0x610000  0x0
-merge_target c3    esp32c3 4MB  0x3B0000  0x0
-merge_target c6    esp32c6 4MB  0x3B0000  0x0
+merge_target esp32  esp32   4MB  0x3B0000  0x1000   # classic: bootloader@0x1000
+merge_target s3     esp32s3 16MB 0x610000  0x0
+merge_target s3-8mb esp32s3 8MB  0x610000  0x0      # Seeed XIAO u.a. (Issue #23)
+merge_target c3     esp32c3 4MB  0x3B0000  0x0
+merge_target c6     esp32c6 4MB  0x3B0000  0x0
+
+# --- 3) Manifest-Writer: atomar + fsync (NFS-Regel) -----------------------
+# webflasher/ liegt auf NFS — nackte cat-Redirects koennen dem nachgelagerten
+# rsync intermittierend NUL-praefixierte Bloecke zeigen (gleiche Signatur wie
+# die gzip-/COMMIT_EDITMSG-Vorfaelle 2026-05-28, vgl. version_bump.py::
+# _atomic_write). Daher: tmp + sync + mv, danach JSON-Validierung.
+write_manifest() {
+  local dst="$1"
+  cat > "$dst.tmp"
+  sync "$dst.tmp"
+  mv "$dst.tmp" "$dst"
+  if ! python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$dst"; then
+    echo "ABORT: $dst ist kein valides JSON (NFS-Korruption?)" >&2
+    exit 2
+  fi
+}
 
 # --- 3a) Fresh-install manifest (full factory write + erase) -------------
-cat > "$OUT/manifest.json" <<EOF
+write_manifest "$OUT/manifest.json" <<EOF
 {
   "name": "SixBack",
   "version": "$VERSION",
@@ -202,7 +223,7 @@ EOF
 #   esp32 / s3 / c3 / c6: app/app0 @ 0x10000
 #   esp32 / c3 / c6:      spiffs   @ 0x3B0000  (partitions-4mb.csv)
 #   s3:                   spiffs   @ 0x610000  (partitions.csv)
-cat > "$OUT/manifest-update.json" <<EOF
+write_manifest "$OUT/manifest-update.json" <<EOF
 {
   "name": "SixBack (update)",
   "version": "$VERSION",
@@ -240,6 +261,62 @@ cat > "$OUT/manifest-update.json" <<EOF
   ]
 }
 EOF
+
+# --- 3c) 8-MB-S3-Variante (Seeed XIAO u.a., Issue #23) --------------------
+# esp-web-tools waehlt Builds NUR per chipFamily — ein zweiter ESP32-S3-
+# Eintrag im Haupt-Manifest waere wirkungslos (der erste gewinnt). Die
+# 8-MB-Variante bekommt deshalb ein EIGENES Manifest-Paar + eigenen
+# Install-Button auf der Landing-Page. Ein 8-MB-Board am Standard-S3-
+# Button wuerde scheitern (16-MB-Factory-Image reicht bis 0xff0000).
+# Offsets identisch zum 16-MB-S3 (App-Slots gleich gross, spiffs gleicher
+# Offset 0x610000) — nur die spiffs-GROESSE unterscheidet sich.
+write_manifest "$OUT/manifest-s3-8mb.json" <<EOF
+{
+  "name": "SixBack (S3 8MB)",
+  "version": "$VERSION",
+  "funding_url": "https://paypal.me/busware",
+  "new_install_prompt_erase": true,
+  "builds": [
+    {
+      "chipFamily": "ESP32-S3",
+      "parts": [
+        { "path": "sixback-s3-8mb-factory.bin", "offset": 0 }
+      ]
+    }
+  ]
+}
+EOF
+
+write_manifest "$OUT/manifest-update-s3-8mb.json" <<EOF
+{
+  "name": "SixBack (S3 8MB update)",
+  "version": "$VERSION",
+  "funding_url": "https://paypal.me/busware",
+  "new_install_prompt_erase": false,
+  "builds": [
+    {
+      "chipFamily": "ESP32-S3",
+      "parts": [
+        { "path": "sixback-s3-8mb-firmware.bin", "offset": 65536   },
+        { "path": "sixback-s3-8mb-littlefs.bin", "offset": 6356992 }
+      ]
+    }
+  ]
+}
+EOF
+
+# --- 3d) Deploy-Reihenfolge-Guard ------------------------------------------
+# Jede in index.html referenzierte Manifest-Datei muss in $OUT existieren —
+# verhindert tote Install-Buttons, wenn die Seite vor den Artefakten deployed
+# wuerde (Praezedenzfall v0.8.10: Page-only-Fix per rsync).
+manifest_missing=0
+for m in $(grep -oE 'manifest="[^"]+"' "$OUT/index.html" | cut -d'"' -f2 | sort -u); do
+  if [ ! -f "$OUT/$m" ]; then
+    echo "ABORT: index.html referenziert $m — fehlt in webflasher/" >&2
+    manifest_missing=1
+  fi
+done
+if [ "$manifest_missing" -gt 0 ]; then exit 2; fi
 
 # --- 4) Summary -----------------------------------------------------------
 echo

@@ -17,11 +17,13 @@ No subscription, no account, no Bose servers.  One USB stick on your LAN.
 > functionality is preserved; the rename reflects the project's identity
 > independent of any Bose trademark.
 
-## Status (v0.8.17)
+## Status (v0.8.18)
 
 | Component                                                            | State                                                                                                              |
 | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
 | Cloud replacement (`/bmx/registry`, `/streaming/…`, `/updates/…`)    | working — 22 / 30 ueberboese-spec endpoints served                                                                 |
+| **ESP32-S3 8 MB variant — Seeed XIAO ESP32S3 & similar** (v0.8.18)  | working — dedicated `s3-8mb` build target with its own partition table (`partitions-8mb.csv`, same 3 MB A/B OTA app slots as the 16 MB layout, 1.9 MB LittleFS), its own web-flasher button pair and its own OTA artifact channel (`sixback-s3-8mb-*`), so over-the-air updates always match the flashed layout. Spotify stays enabled (8 MB PSRAM). The OTA puller also gained a **pre-flight size check** on all targets: an image larger than its target partition is refused before anything is unmounted or written ("wrong build variant for this board?") (#23) |
+| **Rename speakers from the WebUI** (v0.8.18)                         | working — ✏ next to the speaker name sends the new name device-direct (`POST /name`), so it persists on the speaker across reboots, app-free. Two firmware quirks discovered on-device and handled: the speaker silently ignores the request unless the content type is `text/xml`, and it applies **only one rename per power-on** — further renames answer OK while doing nothing. SixBack verifies the speaker's response instead of trusting the status code and tells you when a reboot is needed first. The System tab now also shows the flash size (16 MB / 8 MB) so you can tell the S3 variants apart (#25) |
 | **Spotify — Library + slot trigger** (v0.7.7 → v0.7.11)              | working — connect once via OAuth in the 🎵 Spotify sidebar tab, save tracks / albums / playlists as reusable **Library tiles** (device-side NVS, `GET/POST/DELETE /api/spotify/library`), then drag a tile onto a preset slot. A physical button press fires the Spotify Web-API `/play` to the speaker as a Connect device, with per-slot **shuffle** + **repeat** (one track / full album-playlist) and a live trigger log with 🎵-badges |
 | **Media sidebar — search & drag onto slots**                        | working — a 4-tab Media panel (📻 Radio · 🔗 Stream · 🎵 Spotify · 💿 DLNA): search TuneIn / RadioBrowser stations, keep custom stream URLs and Spotify Library tiles, or browse DLNA servers, then drag any result straight onto one of a speaker's 6 preset slots |
 | **Marge keep-alive** (v0.7.7)                                        | working — 60s background ping of `/setMargeAccount` to every known speaker; prevents the scmudc event-stream from going silent after hours of idle |
@@ -157,7 +159,7 @@ page auto-redirects to the device's freshly assigned LAN IP via
 
 | Chip          | Board reference                  | Flash  | Notes                                                            |
 | ------------- | -------------------------------- | ------ | ---------------------------------------------------------------- |
-| **ESP32-S3 ★**| `esp32-s3-devkitc-1` **with PSRAM** (any "R8" variant, e.g. N16R8 / N8R8) | ≥ 8 MB | **recommended** — **PSRAM is required** (TLS/HTTPS path for Spotify + OTA). The exact SKU is not important; clones are fine. 16 MB is the tested config; 8 MB+PSRAM works too but needs a custom partition table (the shipped one is laid out for 16 MB — open an issue if you want an 8 MB build) |
+| **ESP32-S3 ★**| `esp32-s3-devkitc-1` **with PSRAM** (any "R8" variant, e.g. N16R8 / N8R8) | ≥ 8 MB | **recommended** — **PSRAM is required** (TLS/HTTPS path for Spotify + OTA). The exact SKU is not important; clones are fine. 16 MB is the tested config and uses the default web-flasher button. **8 MB+PSRAM boards (e.g. Seeed XIAO ESP32S3) use the dedicated "S3 8 MB" button** on the web flasher (`s3-8mb` build: own partition table + own OTA channel) — do *not* use the standard S3 button on them, the 16 MB image does not fit the flash |
 | ESP32         | `esp32dev` (DevKitC-1)           | 4 MB  | classic — **shipped again** (v0.8.x); `scripts/fs_exclude_esp32.py` trims the Spotify-only `silence.mp3` from its LittleFS image so the gzipped Web UI fits the 256 KB spiffs slot |
 | ESP32-C3      | `esp32-c3-devkitm-1`             | 4 MB  | flashes over the chip's built-in USB-Serial-JTAG                 |
 | ESP32-C6      | `esp32-c6-devkitc-1`             | 4 MB  | WiFi 6 — works, but cold-start discovery occasionally drops SSDP-multicast packets and rare HTTP-server hangs need a reset |
@@ -236,6 +238,7 @@ webflasher/           esp-web-tools landing page + manifest (binaries
 images/               README assets — title PNG + Web-UI screenshot
 scripts/              version_bump pre-build hook + build_release.sh
 partitions.csv        16 MB partition table  (ESP32-S3 16-MB modules)
+partitions-8mb.csv    8 MB partition table   (ESP32-S3 8-MB modules, e.g. Seeed XIAO)
 partitions-4mb.csv    4 MB partition table   (ESP32 / C3 / C6)
 platformio.ini        Multi-env config, see `[common]` + `[env:*]`
 ```

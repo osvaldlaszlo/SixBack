@@ -114,6 +114,9 @@
   .sp-grip { cursor: grab; color: var(--mute); font-size: 1.05em; line-height: 1;
              padding: 0 .2em; user-select: none; }
   .sp-grip:active { cursor: grabbing; }
+  .sp-rename { cursor: pointer; color: var(--mute); font-size: .8em; opacity: .45;
+               user-select: none; }
+  .sp-rename:hover { opacity: 1; color: var(--accent); }
   .speaker.reorder-over { outline: 2px dashed var(--accent); outline-offset: 2px; }
   .speaker.reorder-dragging { opacity: .5; }
   .preset .slot { font-size: .7em; color: var(--mute); font-weight: 600; }
@@ -553,8 +556,9 @@
 
       <!-- Speaker pairing reminder — distinct from account connect -->
       <div style="margin:.4em 0; padding:.4em .6em; background:#fff8dd; border-left:3px solid #d4a000; font-size:.78em; line-height:1.4; color:#5a4300">
-        <b>One-time speaker pairing:</b> in your Spotify app pick the speaker
-        (e.g. Emma) from "Connect to a device" once and start any track.
+        <b>One-time speaker pairing:</b> in your regular Spotify app (phone/desktop —
+        not the developer dashboard) pick the speaker from "Connect to a device"
+        once and start any track.
         After that, SixBack can trigger it for every preset press. Repeat once
         per speaker reboot.
       </div>
@@ -947,7 +951,7 @@ async function loadStatus() {
     STATE.myBase = (s.cloud_replacement && s.cloud_replacement.base_url) || '';
     STATE.installedVersion = s.version;
     document.getElementById('status-meta').textContent =
-      `v${s.version} · ${s.wifi.ip} · RSSI ${s.wifi.rssi} dBm · ${s.chip.model} · Heap ${Math.round(s.heap.free/1024)}KB · ${s.speakers_count} speaker(s) known`;
+      `v${s.version} · ${s.wifi.ip} · RSSI ${s.wifi.rssi} dBm · ${s.chip.model}${s.chip.flash_size ? ' ' + Math.round(s.chip.flash_size/1048576) + 'MB' : ''} · Heap ${Math.round(s.heap.free/1024)}KB · ${s.speakers_count} speaker(s) known`;
     document.getElementById('raw-status').textContent = JSON.stringify(s, null, 2);
     // Firmware-Tile: installed + build date populieren
     document.getElementById('fw-installed').textContent = s.version;
@@ -1629,7 +1633,7 @@ function speakerCard(s, myBase) {
                   onclick="event.stopPropagation()">⠿</span>
             <span class="sp-toggle" id="chev-${s.device_id}">${open ? '▾' : '▸'}</span>
             <span class="sp-dot off" id="dot-${s.device_id}" title="status"></span>
-            <div class="speaker-title">${esc(s.name || s.device_id)}  ${pillForStatus(s, myBase)}</div>
+            <div class="speaker-title">${esc(s.name || s.device_id)} <span class="sp-rename" title="Rename speaker" onclick="event.stopPropagation();renameSpeaker('${esc(s.device_id)}')">✏</span> ${pillForStatus(s, myBase)}</div>
           </div>
           <div class="speaker-info">${esc(s.model)} · ${esc(s.ip)} · ${esc(s.device_id)} · FW ${esc((s.firmware||'').substring(0,15))}${s.group_id ? ' · group: '+esc(s.group_id) : ''}</div>
           ${cloudLine}
@@ -2771,6 +2775,38 @@ function kickPollStereo(devIds) {
   doIt();
   setTimeout(doIt, 800);
   setTimeout(doIt, 2500);
+}
+
+// Speaker umbenennen (#25) — device-direct POST /name via Backend; 202 +
+// fire-and-forget auf dem ESP, danach re-poll (Name kommt aus dem Inventory).
+async function renameSpeaker(devId) {
+  const s = STATE.speakers.find(x => x.device_id === devId);
+  const cur = (s && (s.name || s.device_id)) || devId;
+  const n = prompt('New speaker name:', cur);
+  if (n === null) return;                 // cancelled
+  const name = n.trim();
+  if (name === '' || name === cur) return;
+  if (name.length > 64) { toast('Name too long (max 64 chars)'); return; }
+  try {
+    await api(`/api/speaker/${encodeURIComponent(devId)}/name`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    });
+    toast(`Renaming to "${name}"…`);
+    // Speaker braucht einen Moment; danach Inventory neu laden und das
+    // Ergebnis VERIFIZIEREN: der SoundTouch akzeptiert nur EINEN Rename
+    // pro Boot-Session (on-device ST10 FW 27.0.3, 2026-06-07) — weitere
+    // Versuche noop'en still mit HTTP 200. Stiller Fail wäre die
+    // #10-Häkchen-Falle; daher expliziter Hinweis mit Reboot-Tipp.
+    setTimeout(async () => {
+      await loadSpeakers();
+      const after = STATE.speakers.find(x => x.device_id === devId);
+      if (after && after.name !== name) {
+        toast('Speaker ignored the rename — SoundTouch applies only one rename per power-on. Reboot the speaker (action button), then try again.', 'error');
+      }
+    }, 5000);
+  } catch (e) { toast('Rename failed: ' + e.message); }
 }
 
 async function stereoPair(devId) {

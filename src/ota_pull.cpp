@@ -13,6 +13,8 @@
 #include <Update.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
+#include <esp_ota_ops.h>
+#include <esp_partition.h>
 
 namespace sixback {
 namespace ota {
@@ -30,9 +32,16 @@ constexpr const char* kManifestUrl =
 // build_release.sh erzeugt:
 //   sixback-<tgt>-firmware.bin
 //   sixback-<tgt>-littlefs.bin
-// wobei <tgt> einer der platformio-envs ist (esp32, s3, c3, c6).
+// wobei <tgt> einer der platformio-envs ist (esp32, s3, s3-8mb, c3, c6).
+//
+// SIXBACK_OTA_PREFIX (platformio.ini build_flags) uebersteuert die Chip-
+// Erkennung fuer Layout-Varianten desselben Chips: env:s3-8mb (Issue #23)
+// MUSS "sixback-s3-8mb-" ziehen — das Standard-s3-littlefs ist 10 MB und
+// passt nicht in die 1.875-MB-spiffs-Partition des 8-MB-Layouts.
 const char* chipPrefix_() {
-#if   CONFIG_IDF_TARGET_ESP32S3
+#if   defined(SIXBACK_OTA_PREFIX)
+    return SIXBACK_OTA_PREFIX;
+#elif CONFIG_IDF_TARGET_ESP32S3
     return "sixback-s3-";
 #elif CONFIG_IDF_TARGET_ESP32C6
     return "sixback-c6-";
@@ -210,6 +219,30 @@ bool pullAndFlashOne_(const char* path, int updateType,
     // boundary-check macht Update.cpp selbst.
     int total = UPDATE_SIZE_UNKNOWN;
 
+    // 2026-06-07 (Issue #23, s3-8mb-Review): Pre-Flight-Groessencheck GEGEN DIE
+    // ZIEL-PARTITION, und zwar VOR LittleFS.end()/Update.begin. Szenario: ein
+    // Geraet mit 8-MB-Partition-Table laeuft (durch Fehlflash am falschen
+    // Webflasher-Button) die Standard-s3-Firmware → chipPrefix_() zieht das
+    // 10-MB-Standard-littlefs in die 1,9-MB-spiffs-Partition. Ohne diesen Check
+    // wuerde erst das laufende FS unmountet und dann Update.write am Partition-
+    // Ende scheitern — FS zerstoert, bevor der Fehler sichtbar wird. Generischer
+    // Schutz: faengt auch server-seitig vertauschte Artefakte ab.
+    {
+        const esp_partition_t* target = (updateType == U_SPIFFS)
+            ? esp_partition_find_first(ESP_PARTITION_TYPE_DATA,
+                                       ESP_PARTITION_SUBTYPE_DATA_SPIFFS, NULL)
+            : esp_ota_get_next_update_partition(NULL);
+        if (target && (uint32_t)contentLen > target->size) {
+            String msg = phaseName;
+            msg += ": image ("; msg += contentLen;
+            msg += " B) larger than target partition ("; msg += target->size;
+            msg += " B) — wrong build variant for this board? refusing to flash";
+            setError_(msg);
+            http.end();
+            return false;
+        }
+    }
+
     lock_();
     g_status.total = (contentLen > 0) ? (uint32_t)contentLen : 0;
     unlock_();
@@ -321,7 +354,8 @@ bool pullAndFlashOne_(const char* path, int updateType,
 }
 
 // Background-Task: Online-Install in 2 Phasen (FS + FW).
-//   Phase 1: sixback-<chip>-littlefs.bin -> U_SPIFFS (~384 KB)
+//   Phase 1: sixback-<chip>-littlefs.bin -> U_SPIFFS (Groesse je Target:
+//            256 KB auf 4-MB-Layouts, 1.9 MB auf s3-8mb, ~10 MB auf s3-16MB)
 //   Phase 2: sixback-<chip>-firmware.bin -> U_FLASH  (~1.7 MB)
 //   -> ESP.restart()
 // Reihenfolge: FS zuerst damit die NEUE UI nach Reboot sofort verfuegbar

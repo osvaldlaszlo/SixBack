@@ -40,7 +40,8 @@ deployment/
 # Entwickler-Referenz.
 docs/
 compile_commands.json
-webflasher/manifest.json
-webflasher/manifest-update.json
+# Generierte esp-web-tools-Manifeste (alle Varianten — build_release.sh schreibt
+# auch manifest-s3-8mb.json + manifest-update-s3-8mb.json, Issue #23)
+webflasher/manifest*.json
 ._*
 .DS_Store
