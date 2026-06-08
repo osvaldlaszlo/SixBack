@@ -490,7 +490,9 @@
           <button onclick="streamImport()" title="Import a previously exported stream-set JSON (merges into the device store)">⬆ Import</button>
         </div>
         <div class="sb-hint">Saved <b>on the device</b> (kept across a USB re-flash); drag a validated tile onto a slot.
-          <b style="color:#7a5400">HTTP URLs are most reliable</b> on old Bose-FW — some HTTPS streams are dropped as <code>INVALID_SOURCE</code>.</div>
+          <b style="color:#7a5400">HTTP URLs are most reliable</b> on old Bose-FW — some HTTPS streams are dropped as <code>INVALID_SOURCE</code>.
+          For a <b>LAN / self-hosted</b> URL the online check can't reach, an <b>Add anyway</b> button appears — the speaker fetches it directly.
+          (HLS <code>.m3u8</code> is always blocked: the speaker has no HLS decoder.)</div>
         <div class="sb-grid sb-grid-saved" id="stream-grid">
           <div class="sb-empty">No custom streams yet.</div>
         </div>
@@ -2986,18 +2988,67 @@ function sidebarSelectTab(name) {
   }
 }
 
+// Client-side HLS guard. The Bose firmware has no HLS decoder, so an .m3u8
+// URL is unplayable no matter how it is added (verified on ST10: .m3u8 ->
+// INVALID_SOURCE). We reject it even on the "Add anyway" path so a LAN/local
+// URL can't sneak an unplayable stream onto a slot.
+function looksLikeHls(url) {
+  try {
+    const u = new URL(url, location.href);
+    return /\.m3u8(#|$)/i.test(u.pathname);   // path only — matches the hosted validator; a .m3u8 in a ?query param is not HLS
+  } catch (_) {
+    return /\.m3u8(\?|#|$)/i.test(url);        // unparseable input: best-effort raw check
+  }
+}
+
+// Persist a stream straight to the device library (NVS). POST only — callers
+// refresh the library (loadStreamLibrary) AFTER setting the success message, so
+// a tile-render hiccup can't be mislabeled as a save failure. stream_url is the key.
+async function persistStream(payload) {
+  await api('/api/streams', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify(payload),
+  });
+}
+
+// Read+trim the three add-stream inputs in one shot.
+function streamFormValues() {
+  return {
+    nameEl: document.getElementById('stream-name'),
+    urlEl:  document.getElementById('stream-url'),
+    imgEl:  document.getElementById('stream-img'),
+    name: document.getElementById('stream-name').value.trim(),
+    url:  document.getElementById('stream-url').value.trim(),
+    img:  document.getElementById('stream-img').value.trim(),
+  };
+}
+
+// Render the validation error together with an "Add anyway" escape hatch.
+// Used when the hosted validator can't reach the URL (LAN / self-hosted) or
+// rejects it for a non-fatal reason — but NOT for HLS, which the speaker
+// genuinely cannot play.
+function offerAddAnyway(meta, reason) {
+  meta.className = 'sb-stream-meta bad';
+  meta.innerHTML = '✗ ' + esc(reason) +
+    ' <button class="primary" style="margin-left:.4em;padding:.1em .5em;font-size:.85em" ' +
+    'onclick="streamAddAnyway()" ' +
+    'title="Skip the online check and store this URL straight on the device. Use this for LAN / self-hosted streams the validator can\'t reach — the speaker fetches them directly.">' +
+    'Add anyway →</button>';
+}
+
 // Stream tab: paste URL+Name, server-side validate, then user drags result tile.
 async function streamAddTile() {
-  const nameEl = document.getElementById('stream-name');
-  const urlEl  = document.getElementById('stream-url');
-  const imgEl  = document.getElementById('stream-img');
-  const btn    = document.getElementById('stream-add-btn');
-  const meta   = document.getElementById('stream-meta');
-  const name = nameEl.value.trim();
-  const url  = urlEl.value.trim();
-  const img  = imgEl.value.trim();
+  const { nameEl, urlEl, imgEl, name, url, img } = streamFormValues();
+  const btn  = document.getElementById('stream-add-btn');
+  const meta = document.getElementById('stream-meta');
   if (!name || !url) {
     meta.className = 'sb-stream-meta bad'; meta.textContent = 'Name + URL required.';
+    return;
+  }
+  if (looksLikeHls(url)) {
+    meta.className = 'sb-stream-meta bad';
+    meta.textContent = '✗ HLS (.m3u8) is not supported by the Bose speaker — use a direct MP3/AAC URL.';
     return;
   }
   btn.disabled = true;
@@ -3015,30 +3066,31 @@ async function streamAddTile() {
   }
   btn.disabled = false; btn.textContent = origLabel;
   if (!v) {
-    meta.className = 'sb-stream-meta bad';
-    meta.textContent = 'Validator unreachable: ' + (lastErr ? lastErr.message : 'unknown');
+    // Validator itself unreachable — for a LAN-only URL this is expected.
+    offerAddAnyway(meta, 'Validator unreachable: ' + (lastErr ? lastErr.message : 'unknown'));
     return;
   }
   if (!v.ok) {
-    meta.className = 'sb-stream-meta bad';
-    meta.textContent = '✗ ' + (v.error || 'invalid stream');
+    if (v.kind === 'hls') {                      // hosted validator flagged HLS — hard stop.
+      meta.className = 'sb-stream-meta bad';
+      meta.textContent = '✗ ' + (v.error || 'HLS is not supported by the Bose speaker');
+      return;
+    }
+    // Blocked LAN address, timeout, etc. — let the user store it unchecked.
+    offerAddAnyway(meta, v.error || 'invalid stream');
     return;
   }
   // Persist device-side (NVS) so the tile is cross-browser and survives a
   // USB-erase — mirrors the Spotify-Library. stream_url is the primary key.
   const streamUrl = v.redirected_to || url;    // follow server-side redirects
   try {
-    await api('/api/streams', {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({
-        name,
-        stream_url:   streamUrl,
-        image_url:    img,
-        icy_name:     v.icy_name || '',
-        content_type: v.content_type || '',
-        bitrate:      v.icy_br || '',
-      }),
+    await persistStream({
+      name,
+      stream_url:   streamUrl,
+      image_url:    img,
+      icy_name:     v.icy_name || '',
+      content_type: v.content_type || '',
+      bitrate:      v.icy_br || '',
     });
   } catch (e) {
     meta.className = 'sb-stream-meta bad';
@@ -3048,6 +3100,39 @@ async function streamAddTile() {
   meta.className = 'sb-stream-meta ok';
   meta.textContent = '✓ ' + (v.icy_name ? `${v.icy_name} · ` : '') +
                      (v.content_type || '') + (v.icy_br ? ` · ${v.icy_br}k` : '');
+  nameEl.value = ''; urlEl.value = ''; imgEl.value = '';
+  await loadStreamLibrary();
+}
+
+// "Add anyway": skip the hosted validator and store the URL directly on the
+// device. For a LAN / self-hosted stream (e.g. an HLS->MP3 transcoder on your
+// own network) the hosted validator can't reach it, but the speaker — on the
+// same LAN — can. Still block .m3u8 client-side since the speaker can't decode
+// it. The speaker follows redirects itself, so the raw URL is stored as-is.
+async function streamAddAnyway() {
+  const { nameEl, urlEl, imgEl, name, url, img } = streamFormValues();
+  const meta = document.getElementById('stream-meta');
+  if (!name || !url) {
+    meta.className = 'sb-stream-meta bad'; meta.textContent = 'Name + URL required.';
+    return;
+  }
+  if (looksLikeHls(url)) {
+    meta.className = 'sb-stream-meta bad';
+    meta.textContent = '✗ HLS (.m3u8) is not supported by the Bose speaker — use a direct MP3/AAC URL.';
+    return;
+  }
+  meta.className = 'sb-stream-meta'; meta.textContent = 'Storing on device…';
+  try {
+    await persistStream({ name, stream_url: url, image_url: img,
+                          icy_name: '', content_type: '', bitrate: '' });
+  } catch (e) {
+    meta.className = 'sb-stream-meta bad';
+    meta.textContent = 'Saving to the device failed: ' + e.message;
+    return;
+  }
+  meta.className = 'sb-stream-meta ok';
+  meta.textContent = '✓ Stored unchecked (LAN/local) — drag the tile onto a slot. ' +
+                     'If it stays silent, the URL is unreachable from the speaker or not MP3/AAC.';
   nameEl.value = ''; urlEl.value = ''; imgEl.value = '';
   await loadStreamLibrary();
 }

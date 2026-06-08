@@ -1,0 +1,14 @@
+# robots.txt — sixback.io
+# Permissive by design: general and AI crawlers are welcome to index this site.
+User-agent: *
+Allow: /
+
+# Nothing useful to index in these — dynamic proxies, diagnostics, and the
+# large firmware images (the web flasher and devices fetch those directly,
+# not via crawlers, so this only spares crawlers needless bandwidth).
+Disallow: /stations/
+Disallow: /snapshots/
+Disallow: /proxy/
+Disallow: /*.bin$
+
+Sitemap: https://sixback.io/sitemap.xml
