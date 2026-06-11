@@ -28,6 +28,18 @@ constexpr uint32_t kAttemptCooldownMs = 60000;   // Cooldown fuer den Versuchs-C
 constexpr uint32_t kPingMs            = 30000;   // periodischer WS-Ping (Liveness)
 constexpr uint32_t kIdleMs            = 90000;   // kein Frame so lange -> Socket tot -> reconnect
 
+// v0.8.24 #15-Hotfix: Bisher hielt der Watcher PRO Speaker eine persistente gabbo-TCP-
+// Socket offen. Bei Grossinstallationen (~10 Boxen) erschoepfen 9-10 Dauer-Sockets das
+// geteilte lwIP-Budget (~16 BSD-Sockets + globaler TCP-PCB-Pool) — zusammen mit einem
+// Discovery-Sweep (je ein WiFiClient/Speaker), Cloud-/Spotify-TLS und OTA. Folge:
+// AsyncWebServer/OTA bekommen keine Verbindung mehr -> "SixBack nicht erreichbar",
+// obwohl das Geraet laeuft. Schutz: hoechstens kMaxActiveConns gabbo-Sockets GLEICHZEITIG
+// offen. Hat ein Geraet mehr LIR-Speaker als das Cap, rotiert das aktive Fenster fair
+// (Best-Effort-Abdeckung statt Erreichbarkeits-Verlust). Bis kMaxActiveConns Speaker:
+// volle Abdeckung wie bisher, keine Rotation. 4 laesst >=12 Sockets fuer Web/OTA/Cloud frei.
+constexpr uint8_t  kMaxActiveConns    = 4;       // max. gleichzeitig offene gabbo-Sockets
+constexpr uint32_t kRotateMs          = 45000;   // Fenster-Rotation bei mehr LIR-Speakern als Cap
+
 // ---------- Loop-Guard Suppress-Map (von mehreren Tasks beschrieben) ----------
 SemaphoreHandle_t g_supMtx = nullptr;
 std::map<String, uint32_t> g_suppress;   // spIp -> lastSelfSelectMs
@@ -56,6 +68,10 @@ struct Conn {
     uint32_t       attemptWin[7] = {0,0,0,0,0,0,0};
 };
 std::map<String, Conn> g_conns;   // deviceId -> Conn (Knoten stabil, kein realloc-copy)
+
+// v0.8.24: Rotations-Fenster fuer den Socket-Cap (nur Watcher-Task -> kein Mutex).
+uint32_t g_rotOffset  = 0;        // Start-Index des aktiven Fensters in g_conns (geordnet)
+uint32_t g_lastRotate = 0;        // millis() der letzten Fenster-Rotation
 
 // nowSelectionUpdated -> preset id (1..6), sonst -1.
 int parsePresetId_(const String& f) {
@@ -163,8 +179,29 @@ void watcherTask_(void* /*arg*/) {
     while (true) {
         uint32_t now = millis();
         if (now - lastReconcile > kReconcileMs) { reconcile_(); lastReconcile = now; }
+        // v0.8.24 Socket-Cap: aktives Fenster bestimmen (+ ggf. rotieren), damit nie mehr
+        // als kMaxActiveConns gabbo-Sockets gleichzeitig offen sind.
+        const size_t nConns = g_conns.size();
+        if (nConns) g_rotOffset %= nConns;          // normalisieren (nConns kann via reconcile schrumpfen)
+        if (nConns > kMaxActiveConns && millis() - g_lastRotate > kRotateMs) {
+            g_lastRotate = millis();
+            g_rotOffset  = (g_rotOffset + kMaxActiveConns) % nConns;
+        }
+        size_t connIdx = 0;
         for (auto& kv : g_conns) {
             Conn& c = kv.second;
+            // Bis zum Cap alle aktiv (keine Rotation); darueber nur das rotierende Fenster
+            // [g_rotOffset, g_rotOffset+kMaxActiveConns) modulo nConns.
+            bool active = (nConns <= kMaxActiveConns) ||
+                          (((connIdx + nConns - g_rotOffset) % nConns) < kMaxActiveConns);
+            ++connIdx;
+            if (!active) {
+                // Inaktiv: Socket freigeben -> lwIP-Budget bleibt fuer Web/OTA/Cloud frei.
+                // pendingSlot loeschen, sonst feuert beim Wiedereintritt ein stale Re-Arm.
+                if (c.ws.connected()) c.ws.close();
+                c.pendingSlot = -1;
+                continue;
+            }
             if (!c.ws.connected()) {
                 if (millis() - c.lastConnectTry > kReconnectMs) {
                     c.lastConnectTry = millis();
